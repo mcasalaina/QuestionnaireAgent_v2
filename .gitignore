@@ -1,0 +1,14 @@
+# Environment variables
+.env
+*.env
+
+# Python byte-code & caches
+__pycache__/
+*/__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+mcp-results.json
+response.json

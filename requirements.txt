@@ -1,0 +1,9 @@
+requests>=2.28.0
+urllib3>=1.26.0
+azure-ai-projects
+azure-identity
+python-dotenv
+openpyxl
+pandas
+playwright
+aiohttp
