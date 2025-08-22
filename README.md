@@ -1,6 +1,6 @@
-# Web-Based Questionnaire Answering Agent (CLI Prototype)
+# Questionnaire Multiagent Application
 
-A command-line tool that accepts a natural-language question and orchestrates three agents in sequence to provide a well-researched, fact-checked answer with verified sources.
+A windowed application that orchestrates three Azure AI Foundry agents to answer questions with fact-checking and link validation. Features both individual question processing and Excel import/export functionality, with a legacy command-line interface also available.
 
 ## Overview
 
@@ -14,18 +14,23 @@ If either checker rejects the answer, the Question Answerer reformulates and the
 
 ## Features
 
-- **Web Grounding**: All agents use web search to ground their decisions
+- **Windowed GUI**: User-friendly interface built with Python tkinter
+- **Excel Integration**: Import questions from Excel files and export results
+- **Real-time Progress**: Live reasoning display showing agent workflow
+- **Character Limit Control**: Configurable answer length with automatic retries
+- **Web Grounding**: All agents use Bing search via Azure AI Foundry
 - **Multi-agent Validation**: Three-stage validation ensures answer quality
-- **Retry Logic**: Up to 25 attempts to generate an acceptable answer
 - **Source Verification**: All cited URLs are checked for reachability and relevance
-- **Comprehensive Logging**: Detailed logs for debugging and monitoring
+- **Legacy CLI Support**: Command-line interface still available for automation
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.7 or higher
-- Internet connection for web search functionality
+- Python 3.8 or higher
+- Azure subscription with AI Foundry project
+- Azure CLI installed and authenticated (`az login`)
+- Bing Search resource connected to your AI Foundry project
 
 ### Install Dependencies
 
@@ -41,30 +46,39 @@ pip install -e .
 
 ## Usage
 
-### Basic Usage
+### Primary GUI Application
+
+Run the main windowed application:
+
+```bash
+python question_answerer.py
+```
+
+**Single Question Mode:**
+1. Enter your context (default: "Microsoft Azure AI")
+2. Set character limit (default: 2000)
+3. Type your question and click "Ask!"
+4. Monitor progress in the Reasoning tab
+5. View results in Answer and Documentation tabs
+
+**Excel Import Mode:**
+1. Click "Import From Excel" button
+2. Select Excel file with questions
+3. System auto-detects question columns
+4. Monitor real-time processing progress
+5. Choose save location when complete
+
+### Legacy CLI Interface
+
+For automation and scripting:
 
 ```bash
 python main.py "Why is the sky blue?"
 ```
 
-### With Verbose Logging
-
+With verbose logging:
 ```bash
 python main.py "What are the benefits of renewable energy?" --verbose
-```
-
-### Save Logs to File
-
-```bash
-python main.py "How does photosynthesis work?" --log-file debug.log
-```
-
-### Using as Installed Command
-
-After installation with `pip install -e .`:
-
-```bash
-questionnaire-agent "Why is the sky blue?"
 ```
 
 ## Example Output
@@ -108,13 +122,18 @@ Sources:
 
 ### Environment Variables
 
-The application requires Azure AI Foundry credentials configured through environment variables:
+Create a `.env` file in the project root with your Azure AI Foundry configuration:
 
 ```bash
-# Required Azure AI Foundry settings
-AZURE_OPENAI_ENDPOINT=your-azure-ai-foundry-endpoint
-AZURE_OPENAI_MODEL_DEPLOYMENT=gpt-4o-mini
+AZURE_OPENAI_ENDPOINT=https://your-project.services.ai.azure.com/api/projects/your-project
+AZURE_OPENAI_MODEL_DEPLOYMENT=gpt-4.1
+BING_CONNECTION_ID=your-bing-connection-name
 ```
+
+**Finding your values:**
+- `AZURE_OPENAI_ENDPOINT`: Found in Azure AI Foundry portal under project overview
+- `AZURE_OPENAI_MODEL_DEPLOYMENT`: Your model deployment name from Models + Endpoints  
+- `BING_CONNECTION_ID`: Connection name (not ID) from Connected Resources in your project
 
 **Important**: Never commit environment files (`.env`) to version control. The `.gitignore` file already excludes these files to prevent accidental commits.
 
@@ -160,20 +179,24 @@ The tool uses Azure AI Foundry with integrated Bing search grounding. For altern
 ### Project Structure
 
 ```
-questionnaire-agent/
-├── main.py                 # CLI entry point
-├── agents/                 # Agent implementations
+QuestionnaireAgent_v2/
+├── question_answerer.py         # Main GUI application
+├── main.py                      # Legacy CLI entry point
+├── agents/                      # Agent implementations
 │   ├── __init__.py
 │   ├── question_answerer.py
 │   ├── answer_checker.py
 │   └── link_checker.py
-├── utils/                  # Shared utilities
+├── utils/                       # Shared utilities
 │   ├── __init__.py
 │   ├── logger.py
+│   ├── resource_manager.py      # Azure AI Foundry resource management
 │   └── web_search.py
-├── requirements.txt        # Python dependencies
-├── setup.py               # Installation script
-└── README.md              # This file
+├── tests/                       # Test suite
+├── requirements.txt             # Python dependencies
+├── setup.py                     # Installation script
+├── README.md                    # This documentation
+└── README_Questionnaire_UI.md   # Detailed UI documentation
 ```
 
 ### Adding New Features
