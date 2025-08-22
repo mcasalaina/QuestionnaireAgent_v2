@@ -324,7 +324,7 @@ class QuestionnaireAgentUI:
             question_answerer = self.project_client.agents.create_agent(
                 model=model_deployment,
                 name="Question Answerer",
-                instructions="You are a question answering agent. You MUST search the web extensively for evidence and synthesize accurate answers. Your answer must be based on current web search results. IMPORTANT: You must include the actual source URLs directly in your answer text. Write the full URLs (like https://docs.microsoft.com/example) in your response text where you reference information. Do not use citation markers like [1], (source), or 【†source】 - instead include the actual URLs. Write in plain text without formatting. Always use the Bing grounding tool to search for current information.",
+                instructions="You are a question answering agent. You MUST search the web extensively for evidence and synthesize accurate answers. Your answer must be based on current web search results. IMPORTANT: You must include the actual source URLs directly in your answer text. Write the full URLs (like https://docs.microsoft.com/example) in your response text where you reference information. Do not use citation markers like [1], (source), or 【†source】 - instead include the actual URLs. Write in plain text without formatting. Your answer must end with a period and contain only complete sentences. Do not include any closing phrases like 'Learn more:', 'References:', questions, or calls-to-action at the end. Always use the Bing grounding tool to search for current information.",
                 tools=bing_tool.definitions
             )
             self.question_answerer_id = question_answerer.id
@@ -532,16 +532,16 @@ class QuestionnaireAgentUI:
             except Exception as e:
                 invalid_links.append(f"{link} (Error: {e})")
                 self.log_reasoning(f"Link Checker: ✗ {link} (Error: {e})")
-                
-        if invalid_links:
-            feedback = f"Invalid links found: {', '.join(invalid_links)}"
-            return False, valid_links, feedback
         
-        if not valid_links:
+        # If we have at least one valid link, that's success
+        if valid_links:
+            if invalid_links:
+                self.log_reasoning(f"Link Checker: Removed {len(invalid_links)} invalid URLs, keeping {len(valid_links)} valid ones")
+                return True, valid_links, f"Found {len(valid_links)} valid links (removed {len(invalid_links)} invalid)"
+            else:
+                return True, valid_links, f"All {len(valid_links)} links are valid"
+        else:
             return False, [], "No valid documentation URLs found after validation"
-            
-        # All links are reachable
-        return True, valid_links, f"All {len(valid_links)} links are valid"
         
     def extract_links_and_clean(self, text: str) -> Tuple[str, List[str]]:
         """Extract URLs from text and return cleaned text and list of URLs."""
@@ -576,6 +576,9 @@ class QuestionnaireAgentUI:
         
         # Remove bullet points
         clean_text = re.sub(r'^\s*[-•]\s*', '', clean_text, flags=re.MULTILINE)
+        
+        # Remove "References:" at the end
+        clean_text = re.sub(r'\s*References?:\s*$', '', clean_text, flags=re.IGNORECASE)
         
         # Clean up whitespace and line breaks
         clean_text = re.sub(r'\n\s*\n', ' ', clean_text)  # Replace multiple newlines with space
