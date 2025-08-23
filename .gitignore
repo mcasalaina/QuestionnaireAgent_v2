@@ -12,3 +12,7 @@ __pycache__/
 *.pyc
 mcp-results.json
 response.json
+
+# Output files
+output/
+.DS_Store

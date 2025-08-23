@@ -13,6 +13,8 @@ import os
 import tempfile
 import asyncio
 import logging
+import argparse
+import sys
 from typing import Tuple, Optional, List, Dict, Any
 from pathlib import Path
 
@@ -28,14 +30,20 @@ load_dotenv()
 class QuestionnaireAgentUI:
     """Main UI application for the Questionnaire Agent."""
     
-    def __init__(self):
+    def __init__(self, headless_mode=False):
         # Setup logging first
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
         
-        self.root = tk.Tk()
-        self.root.title("Questionnaire Multiagent")
-        self.root.geometry("1200x800")
+        # Store headless mode flag
+        self.headless_mode = headless_mode
+        
+        if not headless_mode:
+            self.root = tk.Tk()
+            self.root.title("Questionnaire Multiagent")
+            self.root.geometry("1200x800")
+        else:
+            self.root = None
         
         # Initialize Azure AI Project Client
         self.project_client = None
@@ -46,8 +54,12 @@ class QuestionnaireAgentUI:
         self.answer_checker_id = None
         self.link_checker_id = None
         
-        # Setup UI
-        self.setup_ui()
+        # CLI output buffer for reasoning
+        self.cli_output = []
+        
+        # Setup UI only if not in headless mode
+        if not headless_mode:
+            self.setup_ui()
         
     def init_azure_client(self):
         """Initialize Azure AI Project Client with credentials from .env file."""
@@ -65,8 +77,13 @@ class QuestionnaireAgentUI:
             
         except Exception as e:
             self.logger.error(f"Failed to initialize Azure client: {e}")
-            messagebox.showerror("Azure Connection Error", 
-                               f"Failed to connect to Azure AI Foundry:\n{e}\n\nPlease check your .env file and Azure credentials.")
+            if not self.headless_mode:
+                messagebox.showerror("Azure Connection Error", 
+                                   f"Failed to connect to Azure AI Foundry:\n{e}\n\nPlease check your .env file and Azure credentials.")
+            else:
+                print(f"Error: Failed to connect to Azure AI Foundry: {e}")
+                print("Please check your .env file and Azure credentials.")
+                sys.exit(1)
     
     def setup_ui(self):
         """Setup the main UI layout."""
@@ -163,10 +180,13 @@ class QuestionnaireAgentUI:
         self.reasoning_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
         
     def log_reasoning(self, message: str):
-        """Add a message to the reasoning text area."""
-        self.reasoning_text.insert(tk.END, f"{message}\n")
-        self.reasoning_text.see(tk.END)
-        self.root.update_idletasks()
+        """Add a message to the reasoning text area or CLI output."""
+        if self.headless_mode:
+            self.cli_output.append(message)
+        else:
+            self.reasoning_text.insert(tk.END, f"{message}\n")
+            self.reasoning_text.see(tk.END)
+            self.root.update_idletasks()
         
     def on_ask_clicked(self):
         """Handle the Ask button click."""
@@ -626,41 +646,69 @@ class QuestionnaireAgentUI:
                 self.log_reasoning(f"Processing sheet: {sheet_name}")
                 df = pd.read_excel(temp_path, sheet_name=sheet_name)
                 
-                # Identify columns using LLM
-                question_col, answer_col, docs_col = self.identify_columns_with_llm(df)
+                # Use LLM to identify columns (reuse CLI logic)
+                question_col, answer_col, docs_col = self.identify_columns_with_llm_cli(df)
                 
-                # Ensure answer and docs columns exist
-                if answer_col not in df.columns:
-                    df[answer_col] = ""
-                if docs_col not in df.columns:
-                    df[docs_col] = ""
+                self.log_reasoning(f"LLM identified columns - Questions: {question_col}, Answers: {answer_col}, Docs: {docs_col}")
+                
+                # Skip sheet if no question or answer column found
+                if not question_col or not answer_col:
+                    self.log_reasoning(f"Skipping sheet '{sheet_name}' - missing required question or answer column")
+                    continue
                 
                 # Process each question
+                questions_processed = 0
+                questions_attempted = 0
                 for idx, row in df.iterrows():
                     if pd.notna(row[question_col]) and str(row[question_col]).strip():
                         question = str(row[question_col]).strip()
+                        questions_attempted += 1
                         self.log_reasoning(f"Processing question {idx + 1}: {question[:50]}...")
                         
                         # Process question using the same workflow as single questions
                         success, answer, links = self.process_question_with_agents(question, context, char_limit)
                         
                         if success:
-                            # Update the dataframe
+                            # Update the answer column
                             df.at[idx, answer_col] = answer
-                            if links:
+                            
+                            # Update documentation column only if it exists and we have links
+                            if docs_col and links:
                                 df.at[idx, docs_col] = '\n'.join(links)
-                            else:
-                                df.at[idx, docs_col] = "No documentation links found"
+                            # Leave documentation blank if no links or no docs column
                             
                             self.log_reasoning(f"Successfully processed question {idx + 1}")
+                            questions_processed += 1
                         else:
                             self.log_reasoning(f"Failed to process question {idx + 1}: {answer}")
-                            df.at[idx, answer_col] = f"Error: {answer}"
-                            df.at[idx, docs_col] = "Could not generate documentation"
+                            # Leave response blank on failure - don't write error messages  
+                            # Leave documentation blank on failure - don't write error messages
                 
-                # Save updated sheet
-                with pd.ExcelWriter(temp_path, mode='a', if_sheet_exists='replace', engine='openpyxl') as writer:
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+                # Save updated sheet if we attempted any questions (regardless of success)
+                if questions_attempted > 0:
+                    # Use openpyxl directly to preserve formatting
+                    from openpyxl import load_workbook
+                    wb = load_workbook(temp_path)
+                    ws = wb[sheet_name]
+                    
+                    # Update only the data, not the formatting
+                    for idx, row in df.iterrows():
+                        row_num = idx + 2  # +2 because Excel is 1-indexed and has header
+                        if question_col and pd.notna(row[question_col]) and str(row[question_col]).strip():
+                            # Find answer column index
+                            for col_idx, col_name in enumerate(df.columns, 1):
+                                if col_name == answer_col:
+                                    cell = ws.cell(row=row_num, column=col_idx)
+                                    if pd.notna(row[answer_col]) and str(row[answer_col]).strip():
+                                        cell.value = str(row[answer_col])
+                                elif col_name == docs_col and docs_col:
+                                    cell = ws.cell(row=row_num, column=col_idx)
+                                    if pd.notna(row[docs_col]) and str(row[docs_col]).strip():
+                                        cell.value = str(row[docs_col])
+                    
+                    wb.save(temp_path)
+                
+                self.log_reasoning(f"Processed {questions_processed}/{questions_attempted} questions successfully in sheet '{sheet_name}'")
             
             # Ask user where to save
             self.root.after(0, lambda: self.save_processed_excel(temp_path))
@@ -728,7 +776,7 @@ If a column doesn't exist, suggest a name for it."""
             messages = self.project_client.agents.messages.list(thread_id=thread.id)
             
             # Parse the response
-            for msg in messages.data:
+            for msg in messages:
                 if msg.role == "assistant" and msg.content:
                     response = msg.content[0].text.value
                     question_col = self.extract_column_name(response, "Question Column:")
@@ -811,41 +859,391 @@ If a column doesn't exist, suggest a name for it."""
             self.logger.error(f"Error processing question with agents: {e}")
             return False, f"Error: {e}", []
             
-    def identify_question_column(self, df: pd.DataFrame) -> str:
-        """Identify the column containing questions."""
-        # Simplified logic - look for columns with "question" in the name
-        for col in df.columns:
-            if 'question' in str(col).lower():
-                return col
-        return df.columns[0]  # Default to first column
-        
-    def identify_answer_column(self, df: pd.DataFrame) -> str:
-        """Identify the column for answers."""
-        for col in df.columns:
-            if 'answer' in str(col).lower():
-                return col
-        return df.columns[1] if len(df.columns) > 1 else df.columns[0]
-        
-    def identify_docs_column(self, df: pd.DataFrame) -> str:
-        """Identify the column for documentation."""
-        for col in df.columns:
-            if any(word in str(col).lower() for word in ['doc', 'link', 'reference']):
-                return col
-        return df.columns[2] if len(df.columns) > 2 else df.columns[0]
+    def identify_columns_with_llm_cli(self, df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Use LLM to identify question, answer, and documentation columns for CLI mode."""
+        try:
+            # Create a prompt with column names and sample data
+            column_info = []
+            for col in df.columns:
+                sample_data = df[col].dropna().head(3).tolist()
+                # Convert to strings and truncate if too long
+                sample_strings = [str(item)[:100] for item in sample_data]
+                column_info.append(f"Column '{col}': {sample_strings}")
+            
+            prompt = f"""Analyze the following Excel columns and classify each column header as one of these types:
+- QUESTION: Contains questions to be answered
+- RESPONSE: Where AI responses/answers should be written
+- DOCUMENTATION: Where reference links/documentation should be written  
+- NONE: Not relevant for question answering
+
+Columns:
+{chr(10).join(column_info)}
+
+Respond in this exact format:
+Question Column: [column_name or NONE if no suitable column found]
+Response Column: [column_name or NONE if no suitable column found]  
+Documentation Column: [column_name or NONE if no suitable column found]
+
+Only return existing column names. Do not suggest new column names."""
+
+            # Use the Question Answerer agent to analyze columns
+            thread = self.project_client.agents.threads.create()
+            message = self.project_client.agents.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=prompt
+            )
+            
+            run = self.project_client.agents.runs.create_and_process(
+                thread_id=thread.id,
+                agent_id=self.question_answerer_id
+            )
+            
+            messages = self.project_client.agents.messages.list(thread_id=thread.id)
+            
+            # Parse the response
+            for msg in messages:
+                if msg.role == "assistant" and msg.content:
+                    response = msg.content[0].text.value
+                    question_col = self.extract_column_name(response, "Question Column:")
+                    answer_col = self.extract_column_name(response, "Response Column:")
+                    docs_col = self.extract_column_name(response, "Documentation Column:")
+                    
+                    # Convert "NONE" to None
+                    question_col = None if question_col and question_col.upper() == "NONE" else question_col
+                    answer_col = None if answer_col and answer_col.upper() == "NONE" else answer_col
+                    docs_col = None if docs_col and docs_col.upper() == "NONE" else docs_col
+                    
+                    # Validate that columns exist in the dataframe
+                    if question_col and question_col not in df.columns:
+                        question_col = None
+                    if answer_col and answer_col not in df.columns:
+                        answer_col = None  
+                    if docs_col and docs_col not in df.columns:
+                        docs_col = None
+                    
+                    return question_col, answer_col, docs_col
+            
+            # Fallback if LLM fails
+            return None, None, None
+            
+        except Exception as e:
+            self.logger.error(f"Error identifying columns with LLM: {e}")
+            return None, None, None
+    
+    def extract_column_name(self, response: str, prefix: str) -> Optional[str]:
+        """Extract column name from LLM response."""
+        lines = response.split('\n')
+        for line in lines:
+            if line.strip().startswith(prefix):
+                # Extract everything after the colon and clean it up
+                part = line.split(':', 1)[1].strip()
+                # Remove quotes and brackets if present
+                part = part.strip('"\'[]')
+                return part if part else None
+        return None
         
     def run(self):
         """Start the application."""
-        self.root.mainloop()
+        if not self.headless_mode:
+            self.root.mainloop()
+    
+    def process_single_question_cli(self, question: str, context: str, char_limit: int, verbose: bool) -> Tuple[bool, str, List[str]]:
+        """Process a single question in CLI mode."""
+        try:
+            if verbose:
+                print("Starting question processing...")
+            
+            # Create agents if not already created
+            if not all([self.question_answerer_id, self.answer_checker_id, self.link_checker_id]):
+                self.create_agents()
+            
+            attempt = 1
+            max_attempts = 3
+            
+            while attempt <= max_attempts:
+                if verbose:
+                    print(f"Attempt {attempt}/{max_attempts}")
+                
+                # Step 1: Generate answer
+                if verbose:
+                    print("Question Answerer: Generating answer...")
+                candidate_answer, doc_urls = self.generate_answer(question, context, char_limit)
+                
+                if not candidate_answer:
+                    if verbose:
+                        print("Question Answerer failed to generate an answer")
+                    return False, "Question Answerer failed to generate an answer", []
+                
+                if verbose:
+                    print(f"Generated answer: {candidate_answer[:100]}...")
+                
+                # Remove links and citations, save links for documentation
+                clean_answer, text_links = self.extract_links_and_clean(candidate_answer)
+                
+                if verbose:
+                    print(f"Cleaned answer: {clean_answer[:100]}...")
+                    print(f"Extracted {len(text_links)} URLs from answer text")
+                
+                # Combine documentation URLs
+                all_links = list(set(doc_urls + text_links))
+                if verbose:
+                    print(f"Total combined URLs: {len(all_links)}")
+                
+                # Check character limit
+                if len(clean_answer) > char_limit:
+                    if verbose:
+                        print(f"Answer exceeds character limit ({len(clean_answer)} > {char_limit}). Retrying...")
+                    attempt += 1
+                    continue
+                
+                # Step 2: Validate answer
+                if verbose:
+                    print("Answer Checker: Validating answer...")
+                answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
+                
+                if not answer_valid:
+                    if verbose:
+                        print(f"Answer Checker rejected: {answer_feedback}")
+                    attempt += 1
+                    continue
+                
+                # Step 3: Validate links
+                if verbose:
+                    print("Link Checker: Verifying URLs...")
+                links_valid, valid_links, link_feedback = self.validate_links(all_links)
+                
+                if not links_valid:
+                    if verbose:
+                        print(f"Link Checker rejected: {link_feedback}")
+                    attempt += 1
+                    continue
+                
+                # All checks passed
+                if verbose:
+                    print("All agents approved the answer!")
+                
+                return True, clean_answer, valid_links
+                
+            # Max attempts reached
+            error_msg = f"Failed to generate acceptable answer after {max_attempts} attempts"
+            if verbose:
+                print(error_msg)
+            return False, error_msg, []
+            
+        except Exception as e:
+            error_msg = f"Error processing question: {e}"
+            self.logger.error(error_msg)
+            if verbose:
+                print(error_msg)
+            return False, error_msg, []
+    
+    def process_excel_file_cli(self, input_path: str, output_path: str, context: str, char_limit: int, verbose: bool) -> bool:
+        """Process an Excel file in CLI mode."""
+        try:
+            if verbose:
+                print(f"Processing Excel file: {input_path}")
+            
+            # Create agents if not already created
+            if not all([self.question_answerer_id, self.answer_checker_id, self.link_checker_id]):
+                self.create_agents()
+            
+            # Read Excel file
+            excel_file = pd.ExcelFile(input_path)
+            
+            # Create output file by copying input
+            import shutil
+            shutil.copy2(input_path, output_path)
+            
+            for sheet_name in excel_file.sheet_names:
+                if verbose:
+                    print(f"Processing sheet: {sheet_name}")
+                df = pd.read_excel(output_path, sheet_name=sheet_name)
+                
+                # Use LLM to identify columns
+                question_col, answer_col, docs_col = self.identify_columns_with_llm_cli(df)
+                
+                if verbose:
+                    print(f"LLM identified columns - Questions: {question_col}, Answers: {answer_col}, Docs: {docs_col}")
+                
+                # Skip sheet if no question or answer column found
+                if not question_col or not answer_col:
+                    if verbose:
+                        print(f"Skipping sheet '{sheet_name}' - missing required question or answer column")
+                    continue
+                
+                # Process each question
+                questions_processed = 0
+                questions_attempted = 0
+                for idx, row in df.iterrows():
+                    if pd.notna(row[question_col]) and str(row[question_col]).strip():
+                        question = str(row[question_col]).strip()
+                        questions_attempted += 1
+                        if verbose:
+                            print(f"Processing question {idx + 1}: {question[:50]}...")
+                        
+                        # Process question using CLI workflow
+                        success, answer, links = self.process_single_question_cli(question, context, char_limit, False)
+                        
+                        if success:
+                            # Update the answer column
+                            df.at[idx, answer_col] = answer
+                            
+                            # Update documentation column only if it exists and we have links
+                            if docs_col and links:
+                                df.at[idx, docs_col] = '\n'.join(links)
+                            # Leave documentation blank if no links or no docs column
+                            
+                            if verbose:
+                                print(f"Successfully processed question {idx + 1}")
+                            questions_processed += 1
+                        else:
+                            if verbose:
+                                print(f"Failed to process question {idx + 1}: {answer}")
+                            # Leave response blank on failure - don't write error messages
+                            # Leave documentation blank on failure - don't write error messages
+                
+                # Save updated sheet if we attempted any questions (regardless of success)
+                if questions_attempted > 0:
+                    # Use openpyxl directly to preserve formatting
+                    from openpyxl import load_workbook
+                    wb = load_workbook(output_path)
+                    ws = wb[sheet_name]
+                    
+                    # Update only the data, not the formatting
+                    for idx, row in df.iterrows():
+                        row_num = idx + 2  # +2 because Excel is 1-indexed and has header
+                        if question_col and pd.notna(row[question_col]) and str(row[question_col]).strip():
+                            # Find answer column index
+                            for col_idx, col_name in enumerate(df.columns, 1):
+                                if col_name == answer_col:
+                                    cell = ws.cell(row=row_num, column=col_idx)
+                                    if pd.notna(row[answer_col]) and str(row[answer_col]).strip():
+                                        cell.value = str(row[answer_col])
+                                elif col_name == docs_col and docs_col:
+                                    cell = ws.cell(row=row_num, column=col_idx)
+                                    if pd.notna(row[docs_col]) and str(row[docs_col]).strip():
+                                        cell.value = str(row[docs_col])
+                    
+                    wb.save(output_path)
+                
+                if verbose:
+                    print(f"Processed {questions_processed}/{questions_attempted} questions successfully in sheet '{sheet_name}'")
+            
+            if verbose:
+                print(f"Excel processing completed. Results saved to: {output_path}")
+            
+            return True
+                
+        except Exception as e:
+            error_msg = f"Error processing Excel file: {e}"
+            self.logger.error(error_msg)
+            if verbose:
+                print(error_msg)
+            return False
+
+
+def create_cli_parser():
+    """Create command line argument parser."""
+    parser = argparse.ArgumentParser(
+        description="Questionnaire Multiagent - AI question answering with fact-checking and link validation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  # Single question
+  python question_answerer.py --question "Does your service offer video generative AI?" --context "Microsoft Azure AI" --char-limit 2000
+  
+  # Excel processing
+  python question_answerer.py --import-excel questions.xlsx --output-excel processed.xlsx --context "Microsoft Azure AI" --verbose"""
+    )
+    
+    parser.add_argument('-q', '--question', type=str, help='The natural-language question to ask')
+    parser.add_argument('-c', '--context', type=str, default='Microsoft Azure AI', help='Context or topic string to bias the question answering (default: "Microsoft Azure AI")')
+    parser.add_argument('--char-limit', type=int, default=2000, help='Integer character limit for the final answer (default: 2000)')
+    parser.add_argument('--import-excel', type=str, metavar='PATH', help='Path to an Excel file to process in batch')
+    parser.add_argument('--output-excel', type=str, metavar='PATH', help='Path where the processed Excel file will be written')
+    parser.add_argument('--verbose', action='store_true', default=True, help='Enable verbose/reasoning log output (default: True)')
+    
+    return parser
 
 
 def main():
     """Main entry point."""
-    try:
-        app = QuestionnaireAgentUI()
-        app.run()
-    except Exception as e:
-        print(f"Failed to start application: {e}")
-        messagebox.showerror("Startup Error", f"Failed to start application:\n{e}")
+    parser = create_cli_parser()
+    
+    # Check if any arguments were provided
+    if len(sys.argv) == 1:
+        # No arguments - run in GUI mode
+        try:
+            app = QuestionnaireAgentUI(headless_mode=False)
+            app.run()
+        except Exception as e:
+            print(f"Failed to start application: {e}")
+            try:
+                messagebox.showerror("Startup Error", f"Failed to start application:\n{e}")
+            except:
+                pass
+    else:
+        # Arguments provided - run in CLI mode
+        args = parser.parse_args()
+        
+        # Validate arguments
+        if not args.question and not args.import_excel:
+            print("Error: Either --question or --import-excel must be provided")
+            parser.print_help()
+            sys.exit(1)
+        
+        if args.import_excel and not args.output_excel:
+            # Generate default output filename
+            input_path = Path(args.import_excel)
+            args.output_excel = str(input_path.parent / f"{input_path.stem}.answered.xlsx")
+        
+        try:
+            app = QuestionnaireAgentUI(headless_mode=True)
+            
+            if args.question:
+                # Process single question
+                success, answer, links = app.process_single_question_cli(
+                    args.question, args.context, args.char_limit, args.verbose
+                )
+                
+                if success:
+                    print("\n=== ANSWER ===")
+                    print(answer)
+                    if links:
+                        print("\n=== DOCUMENTATION LINKS ===")
+                        for link in links:
+                            print(f"• {link}")
+                    else:
+                        print("\n=== DOCUMENTATION LINKS ===")
+                        print("No documentation links found")
+                    sys.exit(0)
+                else:
+                    print(f"Error: {answer}")
+                    sys.exit(1)
+            
+            elif args.import_excel:
+                # Process Excel file
+                if not os.path.exists(args.import_excel):
+                    print(f"Error: Excel file not found: {args.import_excel}")
+                    sys.exit(1)
+                
+                success = app.process_excel_file_cli(
+                    args.import_excel, args.output_excel, args.context, args.char_limit, args.verbose
+                )
+                
+                if success:
+                    print(f"\nExcel processing completed successfully. Results saved to: {args.output_excel}")
+                    sys.exit(0)
+                else:
+                    print("Error: Excel processing failed")
+                    sys.exit(1)
+        
+        except KeyboardInterrupt:
+            print("\nOperation cancelled by user")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error: {e}")
+            sys.exit(1)
 
 
 if __name__ == "__main__":
