@@ -33,7 +33,7 @@ load_dotenv(override=True)
 class QuestionnaireAgentUI:
     """Main UI application for the Questionnaire Agent."""
     
-    def __init__(self, headless_mode=False):
+    def __init__(self, headless_mode=False, max_retries=10):
         # Setup logging first - only for our app, not Azure SDK noise
         logging.basicConfig(level=logging.WARNING)  # Set root to WARNING to silence Azure SDK
         self.logger = logging.getLogger(__name__)
@@ -46,6 +46,9 @@ class QuestionnaireAgentUI:
         
         # Store headless mode flag
         self.headless_mode = headless_mode
+        
+        # Store maximum retries configuration
+        self.max_retries = max_retries
         
         if not headless_mode:
             # Enable high DPI awareness on Windows
@@ -174,6 +177,14 @@ class QuestionnaireAgentUI:
         self.limit_entry.insert(0, "2000")  # Default value
         self.limit_entry.pack(fill=tk.X, pady=(0, 15))
         
+        # Maximum Retries section
+        retries_label = ttk.Label(parent, text="Maximum Retries")
+        retries_label.pack(anchor=tk.W, pady=(0, 5))
+        
+        self.retries_entry = tk.Entry(parent, width=40)
+        self.retries_entry.insert(0, str(self.max_retries))  # Default value from constructor
+        self.retries_entry.pack(fill=tk.X, pady=(0, 15))
+        
         # Question section
         question_label = ttk.Label(parent, text="Question")
         question_label.pack(anchor=tk.W, pady=(0, 5))
@@ -263,6 +274,7 @@ class QuestionnaireAgentUI:
         question = self.question_text.get(1.0, tk.END).strip()
         context = self.context_entry.get().strip()
         char_limit = int(self.limit_entry.get()) if self.limit_entry.get().isdigit() else 2000
+        max_retries = int(self.retries_entry.get()) if self.retries_entry.get().isdigit() else self.max_retries
         
         if not question:
             messagebox.showwarning("Input Required", "Please enter a question.")
@@ -271,11 +283,11 @@ class QuestionnaireAgentUI:
             
         # Run processing in separate thread
         thread = threading.Thread(target=self.process_single_question, 
-                                args=(question, context, char_limit))
+                                args=(question, context, char_limit, max_retries))
         thread.daemon = True
         thread.start()
         
-    def process_single_question(self, question: str, context: str, char_limit: int):
+    def process_single_question(self, question: str, context: str, char_limit: int, max_retries: int):
         """Process a single question using the three-agent workflow."""
         try:
             self.log_reasoning("Starting question processing...")
@@ -285,7 +297,7 @@ class QuestionnaireAgentUI:
                 self.create_agents()
             
             attempt = 1
-            max_attempts = 3
+            max_attempts = max_retries
             
             while attempt <= max_attempts:
                 self.log_reasoning(f"Attempt {attempt}/{max_attempts}")
@@ -425,7 +437,7 @@ class QuestionnaireAgentUI:
                 question_answerer = self.project_client.agents.create_agent(
                     model=model_deployment,
                     name="Question Answerer",
-                    instructions="You are a question answering agent. You MUST search the web extensively for evidence and synthesize accurate answers. Your answer must be based on current web search results. IMPORTANT: You must include the actual source URLs directly in your answer text. Write the full URLs (like https://docs.microsoft.com/example) in your response text where you reference information. Do not use citation markers like [1], (source), or 【†source】 - instead include the actual URLs. Write in plain text without formatting. Your answer must end with a period and contain only complete sentences. Do not include any closing phrases like 'Learn more:', 'References:', questions, or calls-to-action at the end. Always use the Bing grounding tool to search for current information.",
+                    instructions="You are a question answering agent. You MUST search the web extensively for evidence and synthesize accurate answers. Your answer must be based on current web search results. IMPORTANT: You must include the actual source URLs directly in your answer text. Write the full URLs (like https://docs.microsoft.com/example) in your response text where you reference information. Do not use citation markers like [1], (source), or 【†source】 - instead include the actual URLs, which you should always put at the end of your response, separated by newlines with no other text or formatting. Write in plain text without formatting. Your answer must end with a period and contain only complete sentences. Do not include any closing phrases like 'Learn more:', 'References:', 'For more information, see:', 'For more details, see:', 'Learn more at:', 'More information:', 'Additional resources:', or any similar calls-to-action at the end. There should only be prose, followed by a list of URLs for reference separated by newlines. Those URLs should be the ones provided by Bing. Always use the Bing grounding tool to search for current information.",
                     tools=bing_tool.definitions
                 )
                 self.question_answerer_id = question_answerer.id
@@ -682,8 +694,15 @@ class QuestionnaireAgentUI:
         # Remove bullet points
         clean_text = re.sub(r'^\s*[-•]\s*', '', clean_text, flags=re.MULTILINE)
         
-        # Remove "References:" at the end
+        # Remove "References:" and similar closing phrases at the end
         clean_text = re.sub(r'\s*References?:\s*$', '', clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r'\s*For more information,?\s*see:\s*$', '', clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r'\s*For more information,?\s*visit:\s*$', '', clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r'\s*For more details,?\s*see:\s*$', '', clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r'\s*Learn more:\s*$', '', clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r'\s*Learn more at:\s*$', '', clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r'\s*More information:\s*$', '', clean_text, flags=re.IGNORECASE)
+        clean_text = re.sub(r'\s*Additional resources:\s*$', '', clean_text, flags=re.IGNORECASE)
         
         # Clean up whitespace and line breaks
         clean_text = re.sub(r'\n\s*\n', ' ', clean_text)  # Replace multiple newlines with space
@@ -726,6 +745,7 @@ class QuestionnaireAgentUI:
             excel_file = pd.ExcelFile(temp_path)
             context = self.context_entry.get().strip()
             char_limit = int(self.limit_entry.get()) if self.limit_entry.get().isdigit() else 2000
+            max_retries = int(self.retries_entry.get()) if self.retries_entry.get().isdigit() else self.max_retries
             
             for sheet_name in excel_file.sheet_names:
                 self.log_reasoning(f"Processing sheet: {sheet_name}")
@@ -751,7 +771,7 @@ class QuestionnaireAgentUI:
                         self.log_reasoning(f"Processing question {idx + 1}: {question[:50]}...")
                         
                         # Process question using the same workflow as single questions
-                        success, answer, links = self.process_question_with_agents(question, context, char_limit)
+                        success, answer, links = self.process_question_with_agents(question, context, char_limit, max_retries)
                         
                         if success:
                             # Update the answer column
@@ -899,11 +919,11 @@ If a column doesn't exist, suggest a name for it."""
             return match.group(1).strip()
         return None
         
-    def process_question_with_agents(self, question: str, context: str, char_limit: int) -> Tuple[bool, str, List[str]]:
+    def process_question_with_agents(self, question: str, context: str, char_limit: int, max_retries: int) -> Tuple[bool, str, List[str]]:
         """Process a single question using the three-agent workflow."""
         try:
             attempt = 1
-            max_attempts = 3
+            max_attempts = max_retries
             
             while attempt <= max_attempts:
                 # Step 1: Generate answer
@@ -1033,9 +1053,13 @@ Only return existing column names. Do not suggest new column names."""
         if not self.headless_mode:
             self.root.mainloop()
     
-    def process_single_question_cli(self, question: str, context: str, char_limit: int, verbose: bool) -> Tuple[bool, str, List[str]]:
+    def process_single_question_cli(self, question: str, context: str, char_limit: int, verbose: bool, max_retries: int = None) -> Tuple[bool, str, List[str]]:
         """Process a single question in CLI mode."""
         scenario = "questionnaire_agent_single_question"
+        
+        # Use instance default if not provided
+        if max_retries is None:
+            max_retries = self.max_retries
         
         if self.tracer:
             with self.tracer.start_as_current_span(scenario) as span:
@@ -1045,13 +1069,18 @@ Only return existing column names. Do not suggest new column names."""
                 span.set_attribute("context", context)
                 span.set_attribute("char_limit", char_limit)
                 span.set_attribute("verbose_mode", verbose)
+                span.set_attribute("max_retries", max_retries)
                 
-                return self._process_single_question_internal(question, context, char_limit, verbose, span)
+                return self._process_single_question_internal(question, context, char_limit, verbose, span, max_retries)
         else:
-            return self._process_single_question_internal(question, context, char_limit, verbose, None)
+            return self._process_single_question_internal(question, context, char_limit, verbose, None, max_retries)
     
-    def _process_single_question_internal(self, question: str, context: str, char_limit: int, verbose: bool, span=None) -> Tuple[bool, str, List[str]]:
+    def _process_single_question_internal(self, question: str, context: str, char_limit: int, verbose: bool, span=None, max_retries: int = None) -> Tuple[bool, str, List[str]]:
         """Internal method for processing a single question with tracing."""
+        # Use instance default if not provided
+        if max_retries is None:
+            max_retries = self.max_retries
+            
         try:
             if verbose:
                 print("Starting question processing...")
@@ -1066,7 +1095,7 @@ Only return existing column names. Do not suggest new column names."""
                     self.create_agents()
             
             attempt = 1
-            max_attempts = 3
+            max_attempts = max_retries
             
             if span:
                 span.set_attribute("max_attempts", max_attempts)
@@ -1221,9 +1250,13 @@ Only return existing column names. Do not suggest new column names."""
             
             return False, error_msg, []
     
-    def process_excel_file_cli(self, input_path: str, output_path: str, context: str, char_limit: int, verbose: bool) -> bool:
+    def process_excel_file_cli(self, input_path: str, output_path: str, context: str, char_limit: int, verbose: bool, max_retries: int = None) -> bool:
         """Process an Excel file in CLI mode."""
         scenario = "questionnaire_agent_excel_processing"
+        
+        # Use instance default if not provided
+        if max_retries is None:
+            max_retries = self.max_retries
         
         if self.tracer:
             with self.tracer.start_as_current_span(scenario) as span:
@@ -1232,13 +1265,18 @@ Only return existing column names. Do not suggest new column names."""
                 span.set_attribute("context", context)
                 span.set_attribute("char_limit", char_limit)
                 span.set_attribute("verbose_mode", verbose)
+                span.set_attribute("max_retries", max_retries)
                 
-                return self._process_excel_file_internal(input_path, output_path, context, char_limit, verbose, span)
+                return self._process_excel_file_internal(input_path, output_path, context, char_limit, verbose, span, max_retries)
         else:
-            return self._process_excel_file_internal(input_path, output_path, context, char_limit, verbose, None)
+            return self._process_excel_file_internal(input_path, output_path, context, char_limit, verbose, None, max_retries)
     
-    def _process_excel_file_internal(self, input_path: str, output_path: str, context: str, char_limit: int, verbose: bool, span=None) -> bool:
+    def _process_excel_file_internal(self, input_path: str, output_path: str, context: str, char_limit: int, verbose: bool, span=None, max_retries: int = None) -> bool:
         """Internal method for Excel file processing with tracing."""
+        # Use instance default if not provided
+        if max_retries is None:
+            max_retries = self.max_retries
+            
         try:
             if verbose:
                 print(f"Processing Excel file: {input_path}")
@@ -1278,10 +1316,10 @@ Only return existing column names. Do not suggest new column names."""
                         sheet_span.set_attribute("sheet.row_count", len(df))
                         sheet_span.set_attribute("sheet.column_count", len(df.columns))
                         
-                        self._process_excel_sheet(df, sheet_name, output_path, context, char_limit, verbose, sheet_span)
+                        self._process_excel_sheet(df, sheet_name, output_path, context, char_limit, verbose, sheet_span, max_retries)
                 else:
                     df = pd.read_excel(output_path, sheet_name=sheet_name)
-                    self._process_excel_sheet(df, sheet_name, output_path, context, char_limit, verbose, None)
+                    self._process_excel_sheet(df, sheet_name, output_path, context, char_limit, verbose, None, max_retries)
             
             if verbose:
                 print(f"Excel processing completed. Results saved to: {output_path}")
@@ -1305,8 +1343,12 @@ Only return existing column names. Do not suggest new column names."""
             
             return False
     
-    def _process_excel_sheet(self, df: pd.DataFrame, sheet_name: str, output_path: str, context: str, char_limit: int, verbose: bool, span=None):
+    def _process_excel_sheet(self, df: pd.DataFrame, sheet_name: str, output_path: str, context: str, char_limit: int, verbose: bool, span=None, max_retries: int = None):
         """Process a single Excel sheet with tracing."""
+        # Use instance default if not provided
+        if max_retries is None:
+            max_retries = self.max_retries
+            
         # Use LLM to identify columns
         question_col, answer_col, docs_col = self.identify_columns_with_llm_cli(df)
         
@@ -1338,7 +1380,7 @@ Only return existing column names. Do not suggest new column names."""
                     print(f"Processing question {idx + 1}: {question[:50]}...")
                 
                 # Process question using CLI workflow
-                success, answer, links = self.process_single_question_cli(question, context, char_limit, False)
+                success, answer, links = self.process_single_question_cli(question, context, char_limit, False, max_retries)
                 
                 if success:
                     # Update the answer column
@@ -1407,6 +1449,7 @@ def create_cli_parser():
     parser.add_argument('-q', '--question', type=str, help='The natural-language question to ask')
     parser.add_argument('-c', '--context', type=str, default='Microsoft Azure AI', help='Context or topic string to bias the question answering (default: "Microsoft Azure AI")')
     parser.add_argument('--char-limit', type=int, default=2000, help='Integer character limit for the final answer (default: 2000)')
+    parser.add_argument('--max-retries', type=int, default=10, help='Maximum number of retries for answer generation (default: 10)')
     parser.add_argument('--import-excel', type=str, metavar='PATH', help='Path to an Excel file to process in batch')
     parser.add_argument('--output-excel', type=str, metavar='PATH', help='Path where the processed Excel file will be written')
     parser.add_argument('--verbose', action='store_true', default=True, help='Enable verbose/reasoning log output (default: True)')
@@ -1446,12 +1489,12 @@ def main():
             args.output_excel = str(input_path.parent / f"{input_path.stem}.answered.xlsx")
         
         try:
-            app = QuestionnaireAgentUI(headless_mode=True)
+            app = QuestionnaireAgentUI(headless_mode=True, max_retries=args.max_retries)
             
             if args.question:
                 # Process single question
                 success, answer, links = app.process_single_question_cli(
-                    args.question, args.context, args.char_limit, args.verbose
+                    args.question, args.context, args.char_limit, args.verbose, args.max_retries
                 )
                 
                 if success:
@@ -1476,7 +1519,7 @@ def main():
                     sys.exit(1)
                 
                 success = app.process_excel_file_cli(
-                    args.import_excel, args.output_excel, args.context, args.char_limit, args.verbose
+                    args.import_excel, args.output_excel, args.context, args.char_limit, args.verbose, args.max_retries
                 )
                 
                 if success:
