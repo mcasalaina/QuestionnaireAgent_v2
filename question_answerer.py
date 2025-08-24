@@ -885,6 +885,12 @@ class QuestionnaireAgentUI:
         )
         
         if file_path:
+            # Switch to Reasoning tab immediately to show processing status
+            self.notebook.select(2)  # Index 2 is the Reasoning tab (Answer=0, Documentation=1, Reasoning=2)
+            
+            # Clear reasoning text to show fresh processing logs
+            self.reasoning_text.delete(1.0, tk.END)
+            
             # Process Excel file in separate thread
             thread = threading.Thread(target=self.process_excel_file, args=(file_path,))
             thread.daemon = True
