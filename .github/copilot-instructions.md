@@ -4,6 +4,11 @@ Always reference these instructions first and fallback to search or bash command
 
 ## Working Effectively
 
+### Fixing issues
+
+- If you're in VS Code and you're asked to fix issues, always make a branch first.
+- When asked to interact with GitHub, use its CLI if needed.
+
 ### Bootstrap and Setup
 - Install Python dependencies: `pip install -r requirements.txt` -- takes 2-3 minutes on first install. NEVER CANCEL. Set timeout to 5+ minutes.
 - Install GUI support: `sudo apt-get update && sudo apt-get install -y python3-tk` -- takes 3-5 minutes. NEVER CANCEL. Set timeout to 10+ minutes.
