@@ -16,3 +16,6 @@ response.json
 # Output files
 output/
 .DS_Store
+
+# VS Code settings
+.vscode/

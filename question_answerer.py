@@ -28,7 +28,7 @@ from azure.ai.agents.models import BingGroundingTool
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 class QuestionnaireAgentUI:
     """Main UI application for the Questionnaire Agent."""
@@ -90,6 +90,8 @@ class QuestionnaireAgentUI:
             endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
             if not endpoint:
                 raise ValueError("AZURE_OPENAI_ENDPOINT not found in environment variables")
+            
+            self.logger.info(f"Connecting to Azure AI Foundry endpoint: {endpoint}")
             
             credential = DefaultAzureCredential()
             self.project_client = AIProjectClient(
@@ -357,7 +359,8 @@ class QuestionnaireAgentUI:
                 
         except Exception as e:
             self.logger.error(f"Error processing question: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {e}"))
+            error_msg = str(e)  # Capture the error message as a string
+            self.root.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {error_msg}"))
         finally:
             # Re-enable button
             self.root.after(0, lambda: self.ask_button.config(state=tk.NORMAL))
@@ -381,29 +384,55 @@ class QuestionnaireAgentUI:
             self.log_reasoning("Creating Azure AI Foundry agents...")
             
             # Get model deployment name from environment
-            model_deployment = os.getenv("AZURE_OPENAI_MODEL_DEPLOYMENT", "gpt-4.1")
+            model_deployment = os.getenv("AZURE_OPENAI_MODEL_DEPLOYMENT")
             bing_resource_name = os.getenv("BING_CONNECTION_ID")
+            
+            self.log_reasoning(f"Using model deployment: {model_deployment}")
+            self.log_reasoning(f"Using Bing connection name: {bing_resource_name}")
             
             if not bing_resource_name:
                 raise ValueError("BING_CONNECTION_ID not found in environment variables")
             
             # Get the actual connection ID from the resource name
             self.log_reasoning(f"Getting connection ID for resource: {bing_resource_name}")
-            connection = self.project_client.connections.get(name=bing_resource_name)
-            conn_id = connection.id
-            self.log_reasoning(f"Retrieved connection ID: {conn_id}")
+            try:
+                connection = self.project_client.connections.get(name=bing_resource_name)
+                conn_id = connection.id
+                self.log_reasoning(f"Retrieved connection ID: {conn_id}")
+            except Exception as conn_error:
+                self.log_reasoning(f"ERROR: Failed to get Bing connection '{bing_resource_name}': {conn_error}")
+                
+                # List all available connections to help debug
+                try:
+                    self.log_reasoning("Listing all available connections:")
+                    connections = self.project_client.connections.list()
+                    for conn in connections:
+                        self.log_reasoning(f"  - Name: '{conn.name}', Type: {getattr(conn, 'connection_type', 'unknown')}, ID: {conn.id}")
+                    
+                    if not connections:
+                        self.log_reasoning("  No connections found in this project.")
+                except Exception as list_error:
+                    self.log_reasoning(f"  Could not list connections: {list_error}")
+                
+                raise ValueError(f"Bing connection '{bing_resource_name}' not found. Check BING_CONNECTION_ID in your .env file.") from conn_error
             
             # Create Bing grounding tool
             bing_tool = BingGroundingTool(connection_id=conn_id)
             
             # Create Question Answerer agent
-            question_answerer = self.project_client.agents.create_agent(
-                model=model_deployment,
-                name="Question Answerer",
-                instructions="You are a question answering agent. You MUST search the web extensively for evidence and synthesize accurate answers. Your answer must be based on current web search results. IMPORTANT: You must include the actual source URLs directly in your answer text. Write the full URLs (like https://docs.microsoft.com/example) in your response text where you reference information. Do not use citation markers like [1], (source), or 【†source】 - instead include the actual URLs. Write in plain text without formatting. Your answer must end with a period and contain only complete sentences. Do not include any closing phrases like 'Learn more:', 'References:', questions, or calls-to-action at the end. Always use the Bing grounding tool to search for current information.",
-                tools=bing_tool.definitions
-            )
-            self.question_answerer_id = question_answerer.id
+            self.log_reasoning(f"Creating Question Answerer agent with model: {model_deployment}")
+            try:
+                question_answerer = self.project_client.agents.create_agent(
+                    model=model_deployment,
+                    name="Question Answerer",
+                    instructions="You are a question answering agent. You MUST search the web extensively for evidence and synthesize accurate answers. Your answer must be based on current web search results. IMPORTANT: You must include the actual source URLs directly in your answer text. Write the full URLs (like https://docs.microsoft.com/example) in your response text where you reference information. Do not use citation markers like [1], (source), or 【†source】 - instead include the actual URLs. Write in plain text without formatting. Your answer must end with a period and contain only complete sentences. Do not include any closing phrases like 'Learn more:', 'References:', questions, or calls-to-action at the end. Always use the Bing grounding tool to search for current information.",
+                    tools=bing_tool.definitions
+                )
+                self.question_answerer_id = question_answerer.id
+                self.log_reasoning(f"Created Question Answerer agent: {self.question_answerer_id}")
+            except Exception as e:
+                self.log_reasoning(f"ERROR: Failed to create Question Answerer agent with model '{model_deployment}': {e}")
+                raise ValueError(f"Model deployment '{model_deployment}' not found. Check AZURE_OPENAI_MODEL_DEPLOYMENT in your .env file.") from e
             
             # Create Answer Checker agent
             answer_checker = self.project_client.agents.create_agent(
