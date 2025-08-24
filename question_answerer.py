@@ -928,6 +928,13 @@ class QuestionnaireAgentUI:
                     self.log_reasoning(f"Skipping sheet '{sheet_name}' - missing required question or answer column")
                     continue
                 
+                # Ensure answer and documentation columns are properly typed for string assignment
+                # This prevents pandas FutureWarning about incompatible dtype when setting string values
+                if answer_col and answer_col in df.columns:
+                    df[answer_col] = df[answer_col].astype('object')
+                if docs_col and docs_col in df.columns:
+                    df[docs_col] = df[docs_col].astype('object')
+                
                 # Process each question
                 questions_processed = 0
                 questions_attempted = 0
