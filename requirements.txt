@@ -7,3 +7,5 @@ openpyxl
 pandas
 playwright
 aiohttp
+azure-monitor-opentelemetry
+opentelemetry-sdk

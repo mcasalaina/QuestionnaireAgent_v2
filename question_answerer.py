@@ -17,6 +17,9 @@ import argparse
 import sys
 from typing import Tuple, Optional, List, Dict, Any
 from pathlib import Path
+from azure.monitor.opentelemetry import configure_azure_monitor
+from opentelemetry import trace
+from opentelemetry.trace import Tracer
 
 import pandas as pd
 from azure.ai.projects import AIProjectClient
@@ -57,6 +60,12 @@ class QuestionnaireAgentUI:
         # CLI output buffer for reasoning
         self.cli_output = []
         
+        # OpenTelemetry tracer for Azure AI Foundry tracing
+        self.tracer: Optional[Tracer] = None
+        
+        # Initialize tracing
+        self.initialize_tracing()
+        
         # Setup UI only if not in headless mode
         if not headless_mode:
             self.setup_ui()
@@ -84,6 +93,35 @@ class QuestionnaireAgentUI:
                 print(f"Error: Failed to connect to Azure AI Foundry: {e}")
                 print("Please check your .env file and Azure credentials.")
                 sys.exit(1)
+    
+    def initialize_tracing(self):
+        """Initialize Azure AI Foundry tracing with Application Insights"""
+        try:
+            # Configure content recording based on environment variable or default to true for debugging
+            content_recording = os.environ.get("AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED", "true").lower()
+            os.environ["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] = content_recording
+            
+            # Get Application Insights connection string from environment variable
+            connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
+            
+            if not connection_string:
+                self.logger.warning("⚠️ APPLICATIONINSIGHTS_CONNECTION_STRING environment variable not set.")
+                self.logger.warning("   Set this in your .env file - get it from Azure Portal > Application Insights > Overview")
+                return False
+            
+            # Configure Azure Monitor tracing
+            configure_azure_monitor(connection_string=connection_string)
+            
+            # Create a tracer for custom spans
+            self.tracer = trace.get_tracer(__name__)
+            
+            content_status = "enabled" if content_recording == "true" else "disabled"
+            self.logger.info(f"✅ Azure AI Foundry tracing initialized successfully (content recording: {content_status}).")
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to initialize tracing: {str(e)}")
+            return False
     
     def setup_ui(self):
         """Setup the main UI layout."""
@@ -950,29 +988,74 @@ Only return existing column names. Do not suggest new column names."""
     
     def process_single_question_cli(self, question: str, context: str, char_limit: int, verbose: bool) -> Tuple[bool, str, List[str]]:
         """Process a single question in CLI mode."""
+        scenario = "questionnaire_agent_single_question"
+        
+        if self.tracer:
+            with self.tracer.start_as_current_span(scenario) as span:
+                # Add attributes to the span for better observability
+                span.set_attribute("question.length", len(question))
+                span.set_attribute("question.preview", question[:100])  # First 100 chars
+                span.set_attribute("context", context)
+                span.set_attribute("char_limit", char_limit)
+                span.set_attribute("verbose_mode", verbose)
+                
+                return self._process_single_question_internal(question, context, char_limit, verbose, span)
+        else:
+            return self._process_single_question_internal(question, context, char_limit, verbose, None)
+    
+    def _process_single_question_internal(self, question: str, context: str, char_limit: int, verbose: bool, span=None) -> Tuple[bool, str, List[str]]:
+        """Internal method for processing a single question with tracing."""
         try:
             if verbose:
                 print("Starting question processing...")
             
             # Create agents if not already created
             if not all([self.question_answerer_id, self.answer_checker_id, self.link_checker_id]):
-                self.create_agents()
+                if span and self.tracer:
+                    with self.tracer.start_as_current_span("create_agents") as agent_span:
+                        agent_span.set_attribute("operation", "create_all_agents")
+                        self.create_agents()
+                else:
+                    self.create_agents()
             
             attempt = 1
             max_attempts = 3
+            
+            if span:
+                span.set_attribute("max_attempts", max_attempts)
             
             while attempt <= max_attempts:
                 if verbose:
                     print(f"Attempt {attempt}/{max_attempts}")
                 
+                if span:
+                    span.set_attribute(f"attempt_{attempt}.started", True)
+                
                 # Step 1: Generate answer
                 if verbose:
                     print("Question Answerer: Generating answer...")
-                candidate_answer, doc_urls = self.generate_answer(question, context, char_limit)
+                
+                if span and self.tracer:
+                    with self.tracer.start_as_current_span("generate_answer") as gen_span:
+                        gen_span.set_attribute("attempt", attempt)
+                        gen_span.set_attribute("agent.type", "question_answerer")
+                        gen_span.set_attribute("question.preview", question[:200])
+                        candidate_answer, doc_urls = self.generate_answer(question, context, char_limit)
+                        
+                        if candidate_answer:
+                            gen_span.set_attribute("answer.length", len(candidate_answer))
+                            gen_span.set_attribute("answer.preview", candidate_answer[:100])
+                            gen_span.set_attribute("doc_urls.count", len(doc_urls))
+                        else:
+                            gen_span.set_attribute("answer.generated", False)
+                else:
+                    candidate_answer, doc_urls = self.generate_answer(question, context, char_limit)
                 
                 if not candidate_answer:
                     if verbose:
                         print("Question Answerer failed to generate an answer")
+                    if span:
+                        span.set_attribute(f"attempt_{attempt}.failure_reason", "no_answer_generated")
                     return False, "Question Answerer failed to generate an answer", []
                 
                 if verbose:
@@ -990,32 +1073,66 @@ Only return existing column names. Do not suggest new column names."""
                 if verbose:
                     print(f"Total combined URLs: {len(all_links)}")
                 
+                if span:
+                    span.set_attribute(f"attempt_{attempt}.clean_answer_length", len(clean_answer))
+                    span.set_attribute(f"attempt_{attempt}.text_links_count", len(text_links))
+                    span.set_attribute(f"attempt_{attempt}.total_links_count", len(all_links))
+                
                 # Check character limit
                 if len(clean_answer) > char_limit:
                     if verbose:
                         print(f"Answer exceeds character limit ({len(clean_answer)} > {char_limit}). Retrying...")
+                    if span:
+                        span.set_attribute(f"attempt_{attempt}.failure_reason", "char_limit_exceeded")
                     attempt += 1
                     continue
                 
                 # Step 2: Validate answer
                 if verbose:
                     print("Answer Checker: Validating answer...")
-                answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
+                
+                if span and self.tracer:
+                    with self.tracer.start_as_current_span("validate_answer") as val_span:
+                        val_span.set_attribute("attempt", attempt)
+                        val_span.set_attribute("agent.type", "answer_checker")
+                        val_span.set_attribute("answer.length", len(clean_answer))
+                        answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
+                        val_span.set_attribute("validation.result", answer_valid)
+                        val_span.set_attribute("validation.feedback", answer_feedback[:200])
+                else:
+                    answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
                 
                 if not answer_valid:
                     if verbose:
                         print(f"Answer Checker rejected: {answer_feedback}")
+                    if span:
+                        span.set_attribute(f"attempt_{attempt}.failure_reason", "answer_validation_failed")
+                        span.set_attribute(f"attempt_{attempt}.validation_feedback", answer_feedback[:200])
                     attempt += 1
                     continue
                 
                 # Step 3: Validate links
                 if verbose:
                     print("Link Checker: Verifying URLs...")
-                links_valid, valid_links, link_feedback = self.validate_links(all_links)
+                
+                if span and self.tracer:
+                    with self.tracer.start_as_current_span("validate_links") as link_span:
+                        link_span.set_attribute("attempt", attempt)
+                        link_span.set_attribute("agent.type", "link_checker")
+                        link_span.set_attribute("links.count", len(all_links))
+                        links_valid, valid_links, link_feedback = self.validate_links(all_links)
+                        link_span.set_attribute("validation.result", links_valid)
+                        link_span.set_attribute("validation.feedback", link_feedback[:200])
+                        link_span.set_attribute("valid_links.count", len(valid_links) if valid_links else 0)
+                else:
+                    links_valid, valid_links, link_feedback = self.validate_links(all_links)
                 
                 if not links_valid:
                     if verbose:
                         print(f"Link Checker rejected: {link_feedback}")
+                    if span:
+                        span.set_attribute(f"attempt_{attempt}.failure_reason", "link_validation_failed")
+                        span.set_attribute(f"attempt_{attempt}.link_feedback", link_feedback[:200])
                     attempt += 1
                     continue
                 
@@ -1023,12 +1140,24 @@ Only return existing column names. Do not suggest new column names."""
                 if verbose:
                     print("All agents approved the answer!")
                 
+                if span:
+                    span.set_attribute("success", True)
+                    span.set_attribute("successful_attempt", attempt)
+                    span.set_attribute("final_answer.length", len(clean_answer))
+                    span.set_attribute("final_links.count", len(valid_links))
+                
                 return True, clean_answer, valid_links
                 
             # Max attempts reached
             error_msg = f"Failed to generate acceptable answer after {max_attempts} attempts"
             if verbose:
                 print(error_msg)
+            
+            if span:
+                span.set_attribute("success", False)
+                span.set_attribute("failure_reason", "max_attempts_exceeded")
+                span.set_attribute("total_attempts", max_attempts)
+            
             return False, error_msg, []
             
         except Exception as e:
@@ -1036,17 +1165,45 @@ Only return existing column names. Do not suggest new column names."""
             self.logger.error(error_msg)
             if verbose:
                 print(error_msg)
+            
+            if span:
+                span.set_attribute("success", False)
+                span.set_attribute("error.message", str(e))
+                span.set_attribute("error.type", type(e).__name__)
+                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            
             return False, error_msg, []
     
     def process_excel_file_cli(self, input_path: str, output_path: str, context: str, char_limit: int, verbose: bool) -> bool:
         """Process an Excel file in CLI mode."""
+        scenario = "questionnaire_agent_excel_processing"
+        
+        if self.tracer:
+            with self.tracer.start_as_current_span(scenario) as span:
+                span.set_attribute("input_file", input_path)
+                span.set_attribute("output_file", output_path)
+                span.set_attribute("context", context)
+                span.set_attribute("char_limit", char_limit)
+                span.set_attribute("verbose_mode", verbose)
+                
+                return self._process_excel_file_internal(input_path, output_path, context, char_limit, verbose, span)
+        else:
+            return self._process_excel_file_internal(input_path, output_path, context, char_limit, verbose, None)
+    
+    def _process_excel_file_internal(self, input_path: str, output_path: str, context: str, char_limit: int, verbose: bool, span=None) -> bool:
+        """Internal method for Excel file processing with tracing."""
         try:
             if verbose:
                 print(f"Processing Excel file: {input_path}")
             
             # Create agents if not already created
             if not all([self.question_answerer_id, self.answer_checker_id, self.link_checker_id]):
-                self.create_agents()
+                if span and self.tracer:
+                    with self.tracer.start_as_current_span("create_agents") as agent_span:
+                        agent_span.set_attribute("operation", "create_all_agents")
+                        self.create_agents()
+                else:
+                    self.create_agents()
             
             # Read Excel file
             excel_file = pd.ExcelFile(input_path)
@@ -1055,83 +1212,35 @@ Only return existing column names. Do not suggest new column names."""
             import shutil
             shutil.copy2(input_path, output_path)
             
-            for sheet_name in excel_file.sheet_names:
+            total_sheets = len(excel_file.sheet_names)
+            if span:
+                span.set_attribute("sheets.total_count", total_sheets)
+                span.set_attribute("sheets.names", excel_file.sheet_names)
+            
+            for sheet_index, sheet_name in enumerate(excel_file.sheet_names, 1):
                 if verbose:
                     print(f"Processing sheet: {sheet_name}")
-                df = pd.read_excel(output_path, sheet_name=sheet_name)
                 
-                # Use LLM to identify columns
-                question_col, answer_col, docs_col = self.identify_columns_with_llm_cli(df)
-                
-                if verbose:
-                    print(f"LLM identified columns - Questions: {question_col}, Answers: {answer_col}, Docs: {docs_col}")
-                
-                # Skip sheet if no question or answer column found
-                if not question_col or not answer_col:
-                    if verbose:
-                        print(f"Skipping sheet '{sheet_name}' - missing required question or answer column")
-                    continue
-                
-                # Process each question
-                questions_processed = 0
-                questions_attempted = 0
-                for idx, row in df.iterrows():
-                    if pd.notna(row[question_col]) and str(row[question_col]).strip():
-                        question = str(row[question_col]).strip()
-                        questions_attempted += 1
-                        if verbose:
-                            print(f"Processing question {idx + 1}: {question[:50]}...")
+                if span and self.tracer:
+                    with self.tracer.start_as_current_span("process_excel_sheet") as sheet_span:
+                        sheet_span.set_attribute("sheet.name", sheet_name)
+                        sheet_span.set_attribute("sheet.index", sheet_index)
+                        sheet_span.set_attribute("sheet.total", total_sheets)
                         
-                        # Process question using CLI workflow
-                        success, answer, links = self.process_single_question_cli(question, context, char_limit, False)
+                        df = pd.read_excel(output_path, sheet_name=sheet_name)
+                        sheet_span.set_attribute("sheet.row_count", len(df))
+                        sheet_span.set_attribute("sheet.column_count", len(df.columns))
                         
-                        if success:
-                            # Update the answer column
-                            df.at[idx, answer_col] = answer
-                            
-                            # Update documentation column only if it exists and we have links
-                            if docs_col and links:
-                                df.at[idx, docs_col] = '\n'.join(links)
-                            # Leave documentation blank if no links or no docs column
-                            
-                            if verbose:
-                                print(f"Successfully processed question {idx + 1}")
-                            questions_processed += 1
-                        else:
-                            if verbose:
-                                print(f"Failed to process question {idx + 1}: {answer}")
-                            # Leave response blank on failure - don't write error messages
-                            # Leave documentation blank on failure - don't write error messages
-                
-                # Save updated sheet if we attempted any questions (regardless of success)
-                if questions_attempted > 0:
-                    # Use openpyxl directly to preserve formatting
-                    from openpyxl import load_workbook
-                    wb = load_workbook(output_path)
-                    ws = wb[sheet_name]
-                    
-                    # Update only the data, not the formatting
-                    for idx, row in df.iterrows():
-                        row_num = idx + 2  # +2 because Excel is 1-indexed and has header
-                        if question_col and pd.notna(row[question_col]) and str(row[question_col]).strip():
-                            # Find answer column index
-                            for col_idx, col_name in enumerate(df.columns, 1):
-                                if col_name == answer_col:
-                                    cell = ws.cell(row=row_num, column=col_idx)
-                                    if pd.notna(row[answer_col]) and str(row[answer_col]).strip():
-                                        cell.value = str(row[answer_col])
-                                elif col_name == docs_col and docs_col:
-                                    cell = ws.cell(row=row_num, column=col_idx)
-                                    if pd.notna(row[docs_col]) and str(row[docs_col]).strip():
-                                        cell.value = str(row[docs_col])
-                    
-                    wb.save(output_path)
-                
-                if verbose:
-                    print(f"Processed {questions_processed}/{questions_attempted} questions successfully in sheet '{sheet_name}'")
+                        self._process_excel_sheet(df, sheet_name, output_path, context, char_limit, verbose, sheet_span)
+                else:
+                    df = pd.read_excel(output_path, sheet_name=sheet_name)
+                    self._process_excel_sheet(df, sheet_name, output_path, context, char_limit, verbose, None)
             
             if verbose:
                 print(f"Excel processing completed. Results saved to: {output_path}")
+            
+            if span:
+                span.set_attribute("success", True)
             
             return True
                 
@@ -1140,7 +1249,99 @@ Only return existing column names. Do not suggest new column names."""
             self.logger.error(error_msg)
             if verbose:
                 print(error_msg)
+            
+            if span:
+                span.set_attribute("success", False)
+                span.set_attribute("error.message", str(e))
+                span.set_attribute("error.type", type(e).__name__)
+                span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            
             return False
+    
+    def _process_excel_sheet(self, df: pd.DataFrame, sheet_name: str, output_path: str, context: str, char_limit: int, verbose: bool, span=None):
+        """Process a single Excel sheet with tracing."""
+        # Use LLM to identify columns
+        question_col, answer_col, docs_col = self.identify_columns_with_llm_cli(df)
+        
+        if verbose:
+            print(f"LLM identified columns - Questions: {question_col}, Answers: {answer_col}, Docs: {docs_col}")
+        
+        if span:
+            span.set_attribute("columns.question", question_col or "none")
+            span.set_attribute("columns.answer", answer_col or "none") 
+            span.set_attribute("columns.docs", docs_col or "none")
+        
+        # Skip sheet if no question or answer column found
+        if not question_col or not answer_col:
+            if verbose:
+                print(f"Skipping sheet '{sheet_name}' - missing required question or answer column")
+            if span:
+                span.set_attribute("sheet.skipped", True)
+                span.set_attribute("skip_reason", "missing_required_columns")
+            return
+        
+        # Process each question
+        questions_processed = 0
+        questions_attempted = 0
+        for idx, row in df.iterrows():
+            if pd.notna(row[question_col]) and str(row[question_col]).strip():
+                question = str(row[question_col]).strip()
+                questions_attempted += 1
+                if verbose:
+                    print(f"Processing question {idx + 1}: {question[:50]}...")
+                
+                # Process question using CLI workflow
+                success, answer, links = self.process_single_question_cli(question, context, char_limit, False)
+                
+                if success:
+                    # Update the answer column
+                    df.at[idx, answer_col] = answer
+                    
+                    # Update documentation column only if it exists and we have links
+                    if docs_col and links:
+                        df.at[idx, docs_col] = '\n'.join(links)
+                    # Leave documentation blank if no links or no docs column
+                    
+                    if verbose:
+                        print(f"Successfully processed question {idx + 1}")
+                    questions_processed += 1
+                else:
+                    if verbose:
+                        print(f"Failed to process question {idx + 1}: {answer}")
+                    # Leave response blank on failure - don't write error messages
+                    # Leave documentation blank on failure - don't write error messages
+        
+        if span:
+            span.set_attribute("questions.attempted", questions_attempted)
+            span.set_attribute("questions.processed", questions_processed)
+            span.set_attribute("questions.success_rate", questions_processed / questions_attempted if questions_attempted > 0 else 0)
+        
+        # Save updated sheet if we attempted any questions (regardless of success)
+        if questions_attempted > 0:
+            # Use openpyxl directly to preserve formatting
+            from openpyxl import load_workbook
+            wb = load_workbook(output_path)
+            ws = wb[sheet_name]
+            
+            # Update only the data, not the formatting
+            for idx, row in df.iterrows():
+                row_num = idx + 2  # +2 because Excel is 1-indexed and has header
+                if question_col and pd.notna(row[question_col]) and str(row[question_col]).strip():
+                    # Find answer column index
+                    for col_idx, col_name in enumerate(df.columns, 1):
+                        if col_name == answer_col:
+                            cell = ws.cell(row=row_num, column=col_idx)
+                            if pd.notna(row[answer_col]) and str(row[answer_col]).strip():
+                                cell.value = str(row[answer_col])
+                        elif col_name == docs_col and docs_col:
+                            cell = ws.cell(row=row_num, column=col_idx)
+                            if pd.notna(row[docs_col]) and str(row[docs_col]).strip():
+                                cell.value = str(row[docs_col])
+            
+            wb.save(output_path)
+        
+        if verbose:
+            print(f"Processed {questions_processed}/{questions_attempted} questions successfully in sheet '{sheet_name}'")
 
 
 def create_cli_parser():
