@@ -128,12 +128,14 @@ Create a `.env` file in the project root with your Azure AI Foundry configuratio
 AZURE_OPENAI_ENDPOINT=https://your-project.services.ai.azure.com/api/projects/your-project
 AZURE_OPENAI_MODEL_DEPLOYMENT=gpt-4.1
 BING_CONNECTION_ID=your-bing-connection-name
+APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpoint=https://your-region.in.applicationinsights.azure.com/;LiveEndpoint=https://your-region.livediagnostics.monitor.azure.com/;ApplicationId=your-app-id
 ```
 
 **Finding your values:**
 - `AZURE_OPENAI_ENDPOINT`: Found in Azure AI Foundry portal under project overview
 - `AZURE_OPENAI_MODEL_DEPLOYMENT`: Your model deployment name from Models + Endpoints  
 - `BING_CONNECTION_ID`: Connection name (not ID) from Connected Resources in your project
+- `APPLICATIONINSIGHTS_CONNECTION_STRING`: Found in Azure Portal > Application Insights > Overview. Enables Azure AI Foundry tracing to monitor application performance, track agent interactions, and debug issues. Optional but recommended for production monitoring.
 
 **Important**: Never commit environment files (`.env`) to version control. The `.gitignore` file already excludes these files to prevent accidental commits.
 
