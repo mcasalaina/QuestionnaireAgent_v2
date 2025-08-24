@@ -34,17 +34,31 @@ class QuestionnaireAgentUI:
     """Main UI application for the Questionnaire Agent."""
     
     def __init__(self, headless_mode=False):
-        # Setup logging first
-        logging.basicConfig(level=logging.INFO)
+        # Setup logging first - only for our app, not Azure SDK noise
+        logging.basicConfig(level=logging.WARNING)  # Set root to WARNING to silence Azure SDK
         self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)  # But keep our app logger at INFO
+        
+        # Silence specific noisy Azure loggers
+        logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+        logging.getLogger("azure.monitor.opentelemetry.exporter").setLevel(logging.WARNING)
+        logging.getLogger("azure.monitor.opentelemetry").setLevel(logging.INFO)
         
         # Store headless mode flag
         self.headless_mode = headless_mode
         
         if not headless_mode:
+            # Enable high DPI awareness on Windows
+            try:
+                from ctypes import windll
+                windll.shcore.SetProcessDpiAwareness(1)
+            except:
+                pass  # Ignore errors on non-Windows platforms or if not available
+            
             self.root = tk.Tk()
             self.root.title("Questionnaire Multiagent")
             self.root.geometry("1200x800")
+            self.root.state('zoomed')  # Open maximized on Windows
         else:
             self.root = None
         
@@ -162,7 +176,8 @@ class QuestionnaireAgentUI:
         question_label = ttk.Label(parent, text="Question")
         question_label.pack(anchor=tk.W, pady=(0, 5))
         
-        self.question_text = scrolledtext.ScrolledText(parent, height=8, width=40)
+        self.question_text = scrolledtext.ScrolledText(parent, height=8, width=40, 
+                                                     font=('Segoe UI', 12))
         self.question_text.insert(tk.END, "Does your service offer video generative AI?")  # Default value
         self.question_text.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
         
@@ -191,7 +206,8 @@ class QuestionnaireAgentUI:
         answer_label = ttk.Label(answer_frame, text="Answer")
         answer_label.pack(anchor=tk.W, pady=(5, 5))
         
-        self.answer_text = scrolledtext.ScrolledText(answer_frame, wrap=tk.WORD)
+        self.answer_text = scrolledtext.ScrolledText(answer_frame, wrap=tk.WORD, 
+                                                   font=('Segoe UI', 12))
         self.answer_text.insert(tk.END, "Response will appear here after clicking Ask!")
         self.answer_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
         
@@ -202,7 +218,8 @@ class QuestionnaireAgentUI:
         docs_label = ttk.Label(docs_frame, text="Documentation")
         docs_label.pack(anchor=tk.W, pady=(5, 5))
         
-        self.docs_text = scrolledtext.ScrolledText(docs_frame, wrap=tk.WORD)
+        self.docs_text = scrolledtext.ScrolledText(docs_frame, wrap=tk.WORD, 
+                                                  font=('Segoe UI', 12))
         self.docs_text.insert(tk.END, "Documentation will appear here...")
         self.docs_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
         
@@ -213,7 +230,8 @@ class QuestionnaireAgentUI:
         reasoning_label = ttk.Label(reasoning_frame, text="Reasoning")
         reasoning_label.pack(anchor=tk.W, pady=(5, 5))
         
-        self.reasoning_text = scrolledtext.ScrolledText(reasoning_frame, wrap=tk.WORD)
+        self.reasoning_text = scrolledtext.ScrolledText(reasoning_frame, wrap=tk.WORD, 
+                                                      font=('Segoe UI', 12))
         self.reasoning_text.insert(tk.END, "Reasoning will appear here...")
         self.reasoning_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
         
