@@ -30,10 +30,10 @@ def test_excel_processing_1_sheet():
         success = app.process_excel_file_cli(
             input_path=sample_file,
             output_path=output_file,
-            context="Test context",
+            context="Microsoft Azure",
             char_limit=500,  # Smaller limit for faster testing
-            verbose=False,
-            max_retries=1
+            verbose=True,  # Enable verbose output to see reasoning
+            max_retries=10
         )
         
         # The test passes if no exception is thrown and the output file exists

@@ -8,6 +8,8 @@ Always reference these instructions first and fallback to search or bash command
 
 - If you're in VS Code and you're asked to fix issues, always make a branch first.
 - When asked to interact with GitHub, use its CLI if needed.
+- Use the existing tests wherever possible. Ask a single question first. Use test_excel_processing_1_sheet.py if you need to test a single sheet.
+- Only make a new test class if absolutely necessary.
 
 ### Bootstrap and Setup
 - Install Python dependencies: `pip install -r requirements.txt` -- takes 2-3 minutes on first install. NEVER CANCEL. Set timeout to 5+ minutes.
@@ -25,7 +27,7 @@ APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpo
 ```
 - Azure CLI authentication is REQUIRED: `az login` before running the application.
 - NEVER commit `.env` files to version control (already in .gitignore).
-- If you're in VS Code, there's already a virtual environment present at ./venv
+- If you're in VS Code, there's already a virtual environment present at ./venv. Activate this venv before you do anything.
 - If you're in VS Code, you can interact with GitHub if needed using the GitHub CLI.
 
 ### Running and Testing

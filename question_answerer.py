@@ -356,12 +356,15 @@ class QuestionnaireAgentUI:
         # Track valid links across retries for this question
         accumulated_valid_links = []
         
+        # Track previous attempts and feedback for context improvement
+        attempt_history = []
+        
         while attempt <= max_attempts:
             self.log_reasoning(f"Attempt {attempt}/{max_attempts}")
             
             # Step 1: Generate answer
             self.log_reasoning("Question Answerer: Generating answer...")
-            candidate_answer, doc_urls = self.generate_answer(question, context, char_limit)
+            candidate_answer, doc_urls = self.generate_answer(question, context, char_limit, attempt_history)
             
             if not candidate_answer:
                 self.log_reasoning("Question Answerer failed to generate an answer")
@@ -391,7 +394,17 @@ class QuestionnaireAgentUI:
             
             # Check character limit
             if len(clean_answer) > char_limit:
-                self.log_reasoning(f"Answer exceeds character limit ({len(clean_answer)} > {char_limit}). Retrying...")
+                rejection_reason = f"Answer exceeds character limit ({len(clean_answer)} > {char_limit})"
+                self.log_reasoning(f"{rejection_reason}. Retrying...")
+                
+                # Add to attempt history for next iteration
+                attempt_history.append({
+                    'attempt': attempt,
+                    'answer': clean_answer,
+                    'rejection_reason': rejection_reason,
+                    'rejected_by': 'Character Limit Check'
+                })
+                
                 attempt += 1
                 continue
             
@@ -401,6 +414,15 @@ class QuestionnaireAgentUI:
             
             if not answer_valid:
                 self.log_reasoning(f"Answer Checker rejected: {answer_feedback}")
+                
+                # Add to attempt history for next iteration
+                attempt_history.append({
+                    'attempt': attempt,
+                    'answer': clean_answer,
+                    'rejection_reason': answer_feedback,
+                    'rejected_by': 'Answer Checker'
+                })
+                
                 attempt += 1
                 continue
             
@@ -419,6 +441,15 @@ class QuestionnaireAgentUI:
             if not links_valid and not accumulated_valid_links:
                 # No valid links in current attempt and no accumulated links from previous attempts
                 self.log_reasoning(f"Link Checker rejected: {link_feedback}")
+                
+                # Add to attempt history for next iteration
+                attempt_history.append({
+                    'attempt': attempt,
+                    'answer': clean_answer,
+                    'rejection_reason': link_feedback,
+                    'rejected_by': 'Link Checker'
+                })
+                
                 attempt += 1
                 continue
             elif not links_valid and accumulated_valid_links:
@@ -548,7 +579,7 @@ class QuestionnaireAgentUI:
             self.logger.error(f"Failed to create agents: {e}")
             raise
             
-    def generate_answer(self, question: str, context: str, char_limit: int) -> Tuple[Optional[str], List[str]]:
+    def generate_answer(self, question: str, context: str, char_limit: int, attempt_history: list = None) -> Tuple[Optional[str], List[str]]:
         """Generate an answer using the Question Answerer agent."""
         try:
             # Use custom span for Question Answerer agent
@@ -558,9 +589,9 @@ class QuestionnaireAgentUI:
                     span.set_attribute("agent.operation", "generate_answer")
                     span.set_attribute("question.context", context)
                     span.set_attribute("question.char_limit", char_limit)
-                    return self._execute_question_answerer(question, context, char_limit)
+                    return self._execute_question_answerer(question, context, char_limit, attempt_history)
             else:
-                return self._execute_question_answerer(question, context, char_limit)
+                return self._execute_question_answerer(question, context, char_limit, attempt_history)
                 
         except Exception as e:
             error_msg = f"Error generating answer: {e}"
@@ -568,14 +599,25 @@ class QuestionnaireAgentUI:
             self.log_reasoning(error_msg)
             return None, []
     
-    def _execute_question_answerer(self, question: str, context: str, char_limit: int) -> Tuple[Optional[str], List[str]]:
+    def _execute_question_answerer(self, question: str, context: str, char_limit: int, attempt_history: list = None) -> Tuple[Optional[str], List[str]]:
         """Internal method to execute Question Answerer agent operations."""
         # Create thread
         thread = self.project_client.agents.threads.create()
         self.log_reasoning(f"Created thread: {thread.id}")
         
         # Create message
-        prompt_content = f"Context: {context}\n\nQuestion: {question}\n\nPlease provide a comprehensive answer with supporting evidence and citations. Keep it under {char_limit} characters."
+        prompt_content = f"Context: {context}\n\nQuestion: {question}\n\n"
+        
+        # Add previous attempt history if available
+        if attempt_history:
+            prompt_content += "PREVIOUS ATTEMPTS AND FEEDBACK:\n"
+            for i, attempt_info in enumerate(attempt_history, 1):
+                prompt_content += f"\nAttempt {attempt_info['attempt']}:\n"
+                prompt_content += f"Previous Answer: {attempt_info['answer'][:500]}{'...' if len(attempt_info['answer']) > 500 else ''}\n"
+                prompt_content += f"Rejected by {attempt_info['rejected_by']}: {attempt_info['rejection_reason']}\n"
+            prompt_content += "\nBased on the above feedback, please generate an improved answer that addresses the identified issues.\n\n"
+        
+        prompt_content += f"Please provide a comprehensive answer with supporting evidence and citations. Keep it under {char_limit} characters."
         message = self.project_client.agents.messages.create(
             thread_id=thread.id,
             role="user",
@@ -1145,9 +1187,12 @@ If a column doesn't exist, suggest a name for it."""
             # Track valid links across retries for this question
             accumulated_valid_links = []
             
+            # Track previous attempts and feedback for context improvement
+            attempt_history = []
+            
             while attempt <= max_attempts:
                 # Step 1: Generate answer
-                candidate_answer, doc_urls = self.generate_answer(question, context, char_limit)
+                candidate_answer, doc_urls = self.generate_answer(question, context, char_limit, attempt_history)
                 
                 if not candidate_answer:
                     return False, "Question Answerer failed to generate an answer", []
@@ -1160,6 +1205,16 @@ If a column doesn't exist, suggest a name for it."""
                 
                 # Check character limit
                 if len(clean_answer) > char_limit:
+                    rejection_reason = f"Answer exceeds character limit ({len(clean_answer)} > {char_limit})"
+                    
+                    # Add to attempt history for next iteration
+                    attempt_history.append({
+                        'attempt': attempt,
+                        'answer': clean_answer,
+                        'rejection_reason': rejection_reason,
+                        'rejected_by': 'Character Limit Check'
+                    })
+                    
                     attempt += 1
                     continue
                 
@@ -1167,6 +1222,14 @@ If a column doesn't exist, suggest a name for it."""
                 answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
                 
                 if not answer_valid:
+                    # Add to attempt history for next iteration
+                    attempt_history.append({
+                        'attempt': attempt,
+                        'answer': clean_answer,
+                        'rejection_reason': answer_feedback,
+                        'rejected_by': 'Answer Checker'
+                    })
+                    
                     attempt += 1
                     continue
                 
@@ -1182,6 +1245,14 @@ If a column doesn't exist, suggest a name for it."""
                 # Check if we have a valid answer and at least some valid links (current or accumulated)
                 if not links_valid and not accumulated_valid_links:
                     # No valid links in current attempt and no accumulated links from previous attempts
+                    # Add to attempt history for next iteration
+                    attempt_history.append({
+                        'attempt': attempt,
+                        'answer': clean_answer,
+                        'rejection_reason': link_feedback,
+                        'rejected_by': 'Link Checker'
+                    })
+                    
                     attempt += 1
                     continue
                 elif not links_valid and accumulated_valid_links:

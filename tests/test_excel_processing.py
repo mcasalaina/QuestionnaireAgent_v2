@@ -55,7 +55,7 @@ class TestExcelProcessing:
                 context="Microsoft Azure AI",
                 char_limit=500,  # Use shorter limit to speed up test
                 verbose=True,
-                max_retries=1    # Use fewer retries to speed up test
+                max_retries=3    # Use fewer retries to speed up test
             )
             
             # The method should complete without throwing an exception
