@@ -449,6 +449,13 @@ class QuestionnaireAgentUI:
                 self.docs_text.insert(tk.END, f"• {link}\n")
         else:
             self.docs_text.insert(tk.END, "No documentation links found.")
+    
+    def update_question_display(self, question: str):
+        """Update the Question box with the current question being processed."""
+        if not self.headless_mode and self.question_text:
+            self.question_text.delete(1.0, tk.END)
+            self.question_text.insert(tk.END, question)
+            self.root.update_idletasks()
             
     def create_agents(self):
         """Create the three Azure AI Foundry agents."""
@@ -874,6 +881,10 @@ class QuestionnaireAgentUI:
                         question = str(row[question_col]).strip()
                         questions_attempted += 1
                         self.log_reasoning(f"Processing question {idx + 1}: {question[:50]}...")
+                        
+                        # Update the Question box to show current question being processed
+                        if not self.headless_mode:
+                            self.root.after(0, lambda q=question: self.update_question_display(q))
                         
                         # Process question using the same workflow as single questions
                         success, answer, links = self.process_question_with_agents(question, context, char_limit, max_retries)
@@ -1359,6 +1370,10 @@ Only return existing column names. Do not suggest new column names."""
                 questions_attempted += 1
                 if verbose:
                     print(f"Processing question {idx + 1}: {question[:50]}...")
+                
+                # Update the Question box to show current question being processed (UI mode only)
+                if not self.headless_mode:
+                    self.root.after(0, lambda q=question: self.update_question_display(q))
                 
                 # Process question using CLI workflow
                 success, answer, links = self.process_single_question_cli(question, context, char_limit, False, max_retries)
