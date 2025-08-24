@@ -20,6 +20,8 @@ APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpo
 ```
 - Azure CLI authentication is REQUIRED: `az login` before running the application.
 - NEVER commit `.env` files to version control (already in .gitignore).
+- If you're in VS Code, there's already a virtual environment present at ./venv
+- If you're in VS Code, you can interact with GitHub if needed using the GitHub CLI.
 
 ### Running and Testing
 - Run GUI application: `python3 question_answerer.py`
