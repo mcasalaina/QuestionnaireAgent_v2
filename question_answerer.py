@@ -366,6 +366,10 @@ class QuestionnaireAgentUI:
         # Track previous attempts and feedback for context improvement
         attempt_history = []
         
+        # Track if we have a valid answer that just needs links (issue #10)
+        validated_answer = None
+        skip_answer_checker = False
+        
         while attempt <= max_attempts:
             self.log_reasoning(f"Attempt {attempt}/{max_attempts}")
             
@@ -415,23 +419,32 @@ class QuestionnaireAgentUI:
                 attempt += 1
                 continue
             
-            # Step 2: Validate answer
-            self.log_reasoning("Answer Checker: Validating answer...")
-            answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
-            
-            if not answer_valid:
-                self.log_reasoning(f"Answer Checker rejected: {answer_feedback}")
+            # Step 2: Validate answer (skip if we already have a validated answer)
+            if skip_answer_checker and validated_answer:
+                self.log_reasoning("Answer Checker: Skipping validation - we already have a validated answer")
+                answer_valid = True
+                clean_answer = validated_answer  # Use the previously validated answer
+            else:
+                self.log_reasoning("Answer Checker: Validating answer...")
+                answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
                 
-                # Add to attempt history for next iteration
-                attempt_history.append({
-                    'attempt': attempt,
-                    'answer': clean_answer,
-                    'rejection_reason': answer_feedback,
-                    'rejected_by': 'Answer Checker'
-                })
-                
-                attempt += 1
-                continue
+                if not answer_valid:
+                    self.log_reasoning(f"Answer Checker rejected: {answer_feedback}")
+                    
+                    # Add to attempt history for next iteration
+                    attempt_history.append({
+                        'attempt': attempt,
+                        'answer': clean_answer,
+                        'rejection_reason': answer_feedback,
+                        'rejected_by': 'Answer Checker'
+                    })
+                    
+                    attempt += 1
+                    continue
+                else:
+                    # Answer Checker approved - save this as our validated answer
+                    validated_answer = clean_answer
+                    self.log_reasoning("Answer Checker: APPROVED - answer saved as validated")
             
             # Step 3: Validate links
             self.log_reasoning("Link Checker: Verifying URLs...")
@@ -449,13 +462,31 @@ class QuestionnaireAgentUI:
                 # No valid links in current attempt and no accumulated links from previous attempts
                 self.log_reasoning(f"Link Checker rejected: {link_feedback}")
                 
-                # Add to attempt history for next iteration
-                attempt_history.append({
-                    'attempt': attempt,
-                    'answer': clean_answer,
-                    'rejection_reason': link_feedback,
-                    'rejected_by': 'Link Checker'
-                })
+                # Issue #10 fix: If we have a validated answer but no links, 
+                # don't throw away the answer - instead ask for links that support it
+                if validated_answer and not skip_answer_checker:
+                    self.log_reasoning("Issue #10 fix: Answer is validated but has no links")
+                    self.log_reasoning("Next attempt will keep the validated answer and ask for supporting links")
+                    
+                    # Add special context for next iteration to find supporting links
+                    attempt_history.append({
+                        'attempt': attempt,
+                        'answer': validated_answer,
+                        'rejection_reason': f"Good answer but needs supporting links: {link_feedback}",
+                        'rejected_by': 'Link Checker (needs supporting links)',
+                        'special_instruction': 'keep_answer_find_links'
+                    })
+                    
+                    # Set flag to skip Answer Checker on next iteration
+                    skip_answer_checker = True
+                else:
+                    # Standard rejection - no validated answer yet
+                    attempt_history.append({
+                        'attempt': attempt,
+                        'answer': clean_answer,
+                        'rejection_reason': link_feedback,
+                        'rejected_by': 'Link Checker'
+                    })
                 
                 attempt += 1
                 continue
@@ -622,14 +653,28 @@ class QuestionnaireAgentUI:
         # Add previous attempt history if available
         if attempt_history:
             self.log_reasoning(f"Question Answerer: Modifying context with {len(attempt_history)} previous attempt(s)")
-            prompt_content += "PREVIOUS ATTEMPTS AND FEEDBACK:\n"
-            for i, attempt_info in enumerate(attempt_history, 1):
-                prompt_content += f"\nAttempt {attempt_info['attempt']}:\n"
-                prompt_content += f"Previous Answer: {attempt_info['answer'][:500]}{'...' if len(attempt_info['answer']) > 500 else ''}\n"
-                prompt_content += f"Rejected by {attempt_info['rejected_by']}: {attempt_info['rejection_reason']}\n"
-                self.log_reasoning(f"Question Answerer: Added feedback from attempt {attempt_info['attempt']} (rejected by {attempt_info['rejected_by']})")
-            prompt_content += "\nBased on the above feedback, please generate an improved answer that addresses the identified issues.\n\n"
-            self.log_reasoning("Question Answerer: Context enhanced with previous attempt feedback")
+            
+            # Check if the last attempt has special instructions (Issue #10)
+            last_attempt = attempt_history[-1] if attempt_history else None
+            if last_attempt and last_attempt.get('special_instruction') == 'keep_answer_find_links':
+                self.log_reasoning("Question Answerer: Special instruction - keep validated answer and find supporting links")
+                prompt_content += "SPECIAL INSTRUCTION (Issue #10 Fix):\n"
+                prompt_content += f"The following answer has been validated as factually correct and complete:\n\n"
+                prompt_content += f'"{last_attempt["answer"]}"\n\n'
+                prompt_content += "DO NOT rewrite this answer. Instead, use your web search capabilities to find credible sources and documentation links that support the claims made in this answer. "
+                prompt_content += "Return the EXACT same answer text, but include the actual source URLs that you find to substantiate the information. "
+                prompt_content += "Put the URLs at the end of your response, separated by newlines.\n\n"
+                self.log_reasoning("Question Answerer: Added special instruction to keep answer and find supporting links")
+            else:
+                # Standard attempt history processing
+                prompt_content += "PREVIOUS ATTEMPTS AND FEEDBACK:\n"
+                for i, attempt_info in enumerate(attempt_history, 1):
+                    prompt_content += f"\nAttempt {attempt_info['attempt']}:\n"
+                    prompt_content += f"Previous Answer: {attempt_info['answer'][:500]}{'...' if len(attempt_info['answer']) > 500 else ''}\n"
+                    prompt_content += f"Rejected by {attempt_info['rejected_by']}: {attempt_info['rejection_reason']}\n"
+                    self.log_reasoning(f"Question Answerer: Added feedback from attempt {attempt_info['attempt']} (rejected by {attempt_info['rejected_by']})")
+                prompt_content += "\nBased on the above feedback, please generate an improved answer that addresses the identified issues.\n\n"
+                self.log_reasoning("Question Answerer: Context enhanced with previous attempt feedback")
         else:
             self.log_reasoning("Question Answerer: Using original context (no previous attempts)")
         
@@ -1233,6 +1278,10 @@ If a column doesn't exist, suggest a name for it."""
             # Track previous attempts and feedback for context improvement
             attempt_history = []
             
+            # Track if we have a valid answer that just needs links (issue #10)
+            validated_answer = None
+            skip_answer_checker = False
+            
             while attempt <= max_attempts:
                 # Step 1: Generate answer
                 candidate_answer, doc_urls = self.generate_answer(question, context, char_limit, attempt_history)
@@ -1261,20 +1310,30 @@ If a column doesn't exist, suggest a name for it."""
                     attempt += 1
                     continue
                 
-                # Step 2: Validate answer
-                answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
-                
-                if not answer_valid:
-                    # Add to attempt history for next iteration
-                    attempt_history.append({
-                        'attempt': attempt,
-                        'answer': clean_answer,
-                        'rejection_reason': answer_feedback,
-                        'rejected_by': 'Answer Checker'
-                    })
+                # Step 2: Validate answer (skip if we already have a validated answer)
+                if skip_answer_checker and validated_answer:
+                    self.log_reasoning("Answer Checker: Skipping validation - we already have a validated answer")
+                    answer_valid = True
+                    clean_answer = validated_answer  # Use the previously validated answer
+                else:
+                    self.log_reasoning("Answer Checker: Validating answer...")
+                    answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
                     
-                    attempt += 1
-                    continue
+                    if not answer_valid:
+                        # Add to attempt history for next iteration
+                        attempt_history.append({
+                            'attempt': attempt,
+                            'answer': clean_answer,
+                            'rejection_reason': answer_feedback,
+                            'rejected_by': 'Answer Checker'
+                        })
+                        
+                        attempt += 1
+                        continue
+                    else:
+                        # Answer Checker approved - save this as our validated answer
+                        validated_answer = clean_answer
+                        self.log_reasoning("Answer Checker: APPROVED - answer saved as validated")
                 
                 # Step 3: Validate links
                 links_valid, valid_links, link_feedback = self.validate_links(all_links)
@@ -1288,13 +1347,33 @@ If a column doesn't exist, suggest a name for it."""
                 # Check if we have a valid answer and at least some valid links (current or accumulated)
                 if not links_valid and not accumulated_valid_links:
                     # No valid links in current attempt and no accumulated links from previous attempts
-                    # Add to attempt history for next iteration
-                    attempt_history.append({
-                        'attempt': attempt,
-                        'answer': clean_answer,
-                        'rejection_reason': link_feedback,
-                        'rejected_by': 'Link Checker'
-                    })
+                    self.log_reasoning(f"Link Checker rejected: {link_feedback}")
+                    
+                    # Issue #10 fix: If we have a validated answer but no links, 
+                    # don't throw away the answer - instead ask for links that support it
+                    if validated_answer and not skip_answer_checker:
+                        self.log_reasoning("Issue #10 fix: Answer is validated but has no links")
+                        self.log_reasoning("Next attempt will keep the validated answer and ask for supporting links")
+                        
+                        # Add special context for next iteration to find supporting links
+                        attempt_history.append({
+                            'attempt': attempt,
+                            'answer': validated_answer,
+                            'rejection_reason': f"Good answer but needs supporting links: {link_feedback}",
+                            'rejected_by': 'Link Checker (needs supporting links)',
+                            'special_instruction': 'keep_answer_find_links'
+                        })
+                        
+                        # Set flag to skip Answer Checker on next iteration
+                        skip_answer_checker = True
+                    else:
+                        # Standard rejection - no validated answer yet
+                        attempt_history.append({
+                            'attempt': attempt,
+                            'answer': clean_answer,
+                            'rejection_reason': link_feedback,
+                            'rejected_by': 'Link Checker'
+                        })
                     
                     attempt += 1
                     continue
