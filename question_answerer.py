@@ -298,21 +298,24 @@ class QuestionnaireAgentUI:
                     span.set_attribute("workflow.char_limit", char_limit)
                     span.set_attribute("workflow.max_retries", max_retries)
                     span.set_attribute("question.text", question[:100] + "..." if len(question) > 100 else question)
-                    return self._execute_workflow(question, context, char_limit, max_retries)
+                    success, answer, links = self._execute_workflow(question, context, char_limit, max_retries)
+                    return success, answer, links
             else:
-                return self._execute_workflow(question, context, char_limit, max_retries)
+                success, answer, links = self._execute_workflow(question, context, char_limit, max_retries)
+                return success, answer, links
                 
         except Exception as e:
             self.logger.error(f"Error processing question: {e}")
             error_msg = str(e)  # Capture the error message as a string
             if not self.headless_mode:
                 self.root.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {error_msg}"))
+            return False, f"Error: {error_msg}", []
         finally:
             # Re-enable button
             if not self.headless_mode:
                 self.root.after(0, lambda: self.ask_button.config(state=tk.NORMAL))
     
-    def _execute_workflow(self, question: str, context: str, char_limit: int, max_retries: int):
+    def _execute_workflow(self, question: str, context: str, char_limit: int, max_retries: int) -> Tuple[bool, str, List[str]]:
         """Internal method to execute the multi-agent workflow."""
         self.log_reasoning("Starting question processing...")
         
@@ -322,6 +325,9 @@ class QuestionnaireAgentUI:
         
         attempt = 1
         max_attempts = max_retries
+        
+        # Track valid links across retries for this question
+        accumulated_valid_links = []
         
         while attempt <= max_attempts:
             self.log_reasoning(f"Attempt {attempt}/{max_attempts}")
@@ -375,25 +381,45 @@ class QuestionnaireAgentUI:
             self.log_reasoning("Link Checker: Verifying URLs...")
             links_valid, valid_links, link_feedback = self.validate_links(all_links)
             
-            if not links_valid:
+            # Accumulate any valid links found in this attempt
+            if valid_links:
+                for link in valid_links:
+                    if link not in accumulated_valid_links:
+                        accumulated_valid_links.append(link)
+                        self.log_reasoning(f"Added valid link to accumulated collection: {link}")
+            
+            # Check if we have a valid answer and at least some valid links (current or accumulated)
+            if not links_valid and not accumulated_valid_links:
+                # No valid links in current attempt and no accumulated links from previous attempts
                 self.log_reasoning(f"Link Checker rejected: {link_feedback}")
                 attempt += 1
                 continue
+            elif not links_valid and accumulated_valid_links:
+                # Current attempt has no valid links, but we have accumulated valid links from previous attempts
+                self.log_reasoning(f"Link Checker found no valid links in current attempt, but reusing {len(accumulated_valid_links)} valid links from previous attempts")
+                final_valid_links = accumulated_valid_links.copy()
+            else:
+                # Current attempt has valid links
+                final_valid_links = accumulated_valid_links.copy()  # Use all accumulated links
             
             # All checks passed
             self.log_reasoning("All agents approved the answer!")
+            self.log_reasoning(f"Final answer will use {len(final_valid_links)} documentation links")
             
-            # Update UI with results
+            # Update UI with results (only in non-headless mode)
             if not self.headless_mode:
-                self.root.after(0, lambda: self.update_results(clean_answer, valid_links))
-            break
+                self.root.after(0, lambda: self.update_results(clean_answer, final_valid_links))
             
-        else:
-            # Max attempts reached
-            self.log_reasoning(f"Failed to generate acceptable answer after {max_attempts} attempts")
-            if not self.headless_mode:
-                self.root.after(0, lambda: messagebox.showerror("Processing Failed", 
-                    f"Could not generate an acceptable answer after {max_attempts} attempts."))
+            # Return success with results
+            return True, clean_answer, final_valid_links
+            
+        # Max attempts reached
+        self.log_reasoning(f"Failed to generate acceptable answer after {max_attempts} attempts")
+        if not self.headless_mode:
+            self.root.after(0, lambda: messagebox.showerror("Processing Failed", 
+                f"Could not generate an acceptable answer after {max_attempts} attempts."))
+        
+        return False, f"Failed to generate acceptable answer after {max_attempts} attempts", []
                 
     def update_results(self, answer: str, links: List[str]):
         """Update the UI with the final answer and documentation."""
@@ -985,15 +1011,21 @@ If a column doesn't exist, suggest a name for it."""
             attempt = 1
             max_attempts = max_retries
             
+            # Track valid links across retries for this question
+            accumulated_valid_links = []
+            
             while attempt <= max_attempts:
                 # Step 1: Generate answer
-                candidate_answer = self.generate_answer(question, context, char_limit)
+                candidate_answer, doc_urls = self.generate_answer(question, context, char_limit)
                 
                 if not candidate_answer:
                     return False, "Question Answerer failed to generate an answer", []
                 
                 # Remove links and citations, save links for documentation
-                clean_answer, links = self.extract_links_and_clean(candidate_answer)
+                clean_answer, text_links = self.extract_links_and_clean(candidate_answer)
+                
+                # Combine documentation URLs from run steps with any URLs found in text
+                all_links = list(set(doc_urls + text_links))  # Remove duplicates
                 
                 # Check character limit
                 if len(clean_answer) > char_limit:
@@ -1008,14 +1040,28 @@ If a column doesn't exist, suggest a name for it."""
                     continue
                 
                 # Step 3: Validate links
-                links_valid, valid_links, link_feedback = self.validate_links(links)
+                links_valid, valid_links, link_feedback = self.validate_links(all_links)
                 
-                if not links_valid:
+                # Accumulate any valid links found in this attempt
+                if valid_links:
+                    for link in valid_links:
+                        if link not in accumulated_valid_links:
+                            accumulated_valid_links.append(link)
+                
+                # Check if we have a valid answer and at least some valid links (current or accumulated)
+                if not links_valid and not accumulated_valid_links:
+                    # No valid links in current attempt and no accumulated links from previous attempts
                     attempt += 1
                     continue
+                elif not links_valid and accumulated_valid_links:
+                    # Current attempt has no valid links, but we have accumulated valid links from previous attempts
+                    final_valid_links = accumulated_valid_links.copy()
+                else:
+                    # Current attempt has valid links
+                    final_valid_links = accumulated_valid_links.copy()  # Use all accumulated links
                 
                 # All checks passed
-                return True, clean_answer, valid_links
+                return True, clean_answer, final_valid_links
                 
             # Max attempts reached
             return False, f"Failed to generate acceptable answer after {max_attempts} attempts", []
@@ -1148,21 +1194,14 @@ Only return existing column names. Do not suggest new column names."""
                 self.create_agents()
             
             # Use the same workflow as GUI mode
-            self._execute_workflow(question, context, char_limit, max_retries)
+            success, answer, links = self._execute_workflow(question, context, char_limit, max_retries)
             
             # Extract results from CLI output (the workflow populates this in headless mode)
             if verbose:
                 for line in self.cli_output:
                     print(line)
             
-            # For CLI, we need to track the success differently since GUI updates won't happen
-            # We'll check if the workflow completed successfully by examining the last reasoning message
-            if self.cli_output and "All agents approved the answer!" in self.cli_output:
-                # Extract the final answer and links from the CLI output or workflow state
-                # This is a simplified approach - in a production system, you'd want to return values from _execute_workflow
-                return True, "Answer processed successfully - check verbose output for details", []
-            else:
-                return False, "Failed to generate acceptable answer", []
+            return success, answer, links
                 
         except Exception as e:
             if verbose:
