@@ -794,6 +794,9 @@ class QuestionnaireAgentUI:
         clean_text = re.sub(r'\n\s*\n', ' ', clean_text)  # Replace multiple newlines with space
         clean_text = re.sub(r'\s+', ' ', clean_text).strip()  # Clean up multiple spaces
         
+        # Fix space before periods (e.g., "these scenarios ." -> "these scenarios.")
+        clean_text = re.sub(r'\s+\.', '.', clean_text)  # Replace space(s) before period with just period
+        
         return clean_text, urls
         
     def on_import_excel_clicked(self):
