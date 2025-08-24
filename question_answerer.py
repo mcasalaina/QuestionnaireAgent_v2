@@ -949,50 +949,60 @@ class QuestionnaireAgentUI:
         
     def on_import_excel_clicked(self):
         """Handle the Import From Excel button click."""
-        file_path = filedialog.askopenfilename(
-            title="Select Excel File",
+        # First, get the input Excel file
+        input_file_path = filedialog.askopenfilename(
+            title="Select Input Excel File",
             filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
         )
         
-        if file_path:
-            # Switch to Reasoning tab immediately to show processing status
-            self.notebook.select(2)  # Index 2 is the Reasoning tab (Answer=0, Documentation=1, Reasoning=2)
+        if not input_file_path:
+            return
+        
+        # Then, get the output Excel file location
+        output_file_path = filedialog.asksaveasfilename(
+            title="Save Processed Excel File As",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+        
+        if not output_file_path:
+            return
             
-            # Clear reasoning text to show fresh processing logs
-            self.reasoning_text.delete(1.0, tk.END)
+        # Switch to Reasoning tab immediately to show processing status
+        self.notebook.select(2)  # Index 2 is the Reasoning tab (Answer=0, Documentation=1, Reasoning=2)
+        
+        # Clear reasoning text to show fresh processing logs
+        self.reasoning_text.delete(1.0, tk.END)
+        
+        # Process Excel file in separate thread with both input and output paths
+        thread = threading.Thread(target=self.process_excel_file, args=(input_file_path, output_file_path))
+        thread.daemon = True
+        thread.start()
             
-            # Process Excel file in separate thread
-            thread = threading.Thread(target=self.process_excel_file, args=(file_path,))
-            thread.daemon = True
-            thread.start()
-            
-    def process_excel_file(self, file_path: str):
-        """Process an Excel file with questions."""
+    def process_excel_file(self, input_file_path: str, output_file_path: str):
+        """Process an Excel file with questions, saving results continuously to output file."""
         try:
-            self.log_reasoning(f"Processing Excel file: {file_path}")
+            self.log_reasoning(f"Processing Excel file: {input_file_path}")
+            self.log_reasoning(f"Output will be saved to: {output_file_path}")
             
             # Create agents if not already created
             if not all([self.question_answerer_id, self.answer_checker_id, self.link_checker_id]):
                 self.create_agents()
             
-            # Create temporary copy
-            temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
-            temp_path = temp_file.name
-            temp_file.close()
-            
-            # Copy original file
+            # Copy input file to output location
             import shutil
-            shutil.copy2(file_path, temp_path)
+            shutil.copy2(input_file_path, output_file_path)
+            self.log_reasoning(f"Created output file from input template")
             
             # Read Excel file
-            excel_file = pd.ExcelFile(temp_path)
+            excel_file = pd.ExcelFile(output_file_path)
             context = self.context_entry.get().strip()
             char_limit = int(self.limit_entry.get()) if self.limit_entry.get().isdigit() else 2000
             max_retries = int(self.retries_entry.get()) if self.retries_entry.get().isdigit() else self.max_retries
             
             for sheet_name in excel_file.sheet_names:
                 self.log_reasoning(f"Processing sheet: {sheet_name}")
-                df = pd.read_excel(temp_path, sheet_name=sheet_name)
+                df = pd.read_excel(output_file_path, sheet_name=sheet_name)
                 
                 # Use LLM to identify columns (reuse CLI logic)
                 question_col, answer_col, docs_col = self.identify_columns_with_llm_cli(df)
@@ -1011,6 +1021,11 @@ class QuestionnaireAgentUI:
                 if docs_col and docs_col in df.columns:
                     df[docs_col] = df[docs_col].astype('object')
                 
+                # Load workbook for continuous saving
+                from openpyxl import load_workbook
+                wb = load_workbook(output_file_path)
+                ws = wb[sheet_name]
+                
                 # Process each question
                 questions_processed = 0
                 questions_attempted = 0
@@ -1028,53 +1043,53 @@ class QuestionnaireAgentUI:
                         success, answer, links = self.process_question_with_agents(question, context, char_limit, max_retries)
                         
                         if success:
-                            # Update the answer column
+                            # Update the answer column in dataframe
                             df.at[idx, answer_col] = answer
                             
                             # Update documentation column only if it exists and we have links
                             if docs_col and links:
                                 df.at[idx, docs_col] = '\n'.join(links)
-                            # Leave documentation blank if no links or no docs column
                             
-                            self.log_reasoning(f"Successfully processed question {idx + 1}")
+                            # Save to Excel file immediately using openpyxl
+                            row_num = idx + 2  # +2 because Excel is 1-indexed and has header
+                            
+                            # Find and update answer column
+                            for col_idx, col_name in enumerate(df.columns, 1):
+                                if col_name == answer_col:
+                                    cell = ws.cell(row=row_num, column=col_idx)
+                                    cell.value = answer
+                                elif col_name == docs_col and docs_col and links:
+                                    cell = ws.cell(row=row_num, column=col_idx)
+                                    cell.value = '\n'.join(links)
+                            
+                            # Save the workbook immediately after each successful question
+                            wb.save(output_file_path)
+                            
+                            self.log_reasoning(f"Successfully processed question {idx + 1} and saved to output file")
                             questions_processed += 1
                         else:
                             self.log_reasoning(f"Failed to process question {idx + 1}: {answer}")
                             # Leave response blank on failure - don't write error messages  
                             # Leave documentation blank on failure - don't write error messages
                 
-                # Save updated sheet if we attempted any questions (regardless of success)
-                if questions_attempted > 0:
-                    # Use openpyxl directly to preserve formatting
-                    from openpyxl import load_workbook
-                    wb = load_workbook(temp_path)
-                    ws = wb[sheet_name]
-                    
-                    # Update only the data, not the formatting
-                    for idx, row in df.iterrows():
-                        row_num = idx + 2  # +2 because Excel is 1-indexed and has header
-                        if question_col and pd.notna(row[question_col]) and str(row[question_col]).strip():
-                            # Find answer column index
-                            for col_idx, col_name in enumerate(df.columns, 1):
-                                if col_name == answer_col:
-                                    cell = ws.cell(row=row_num, column=col_idx)
-                                    if pd.notna(row[answer_col]) and str(row[answer_col]).strip():
-                                        cell.value = str(row[answer_col])
-                                elif col_name == docs_col and docs_col:
-                                    cell = ws.cell(row=row_num, column=col_idx)
-                                    if pd.notna(row[docs_col]) and str(row[docs_col]).strip():
-                                        cell.value = str(row[docs_col])
-                    
-                    wb.save(temp_path)
+                # Close the workbook for this sheet
+                wb.close()
                 
                 self.log_reasoning(f"Processed {questions_processed}/{questions_attempted} questions successfully in sheet '{sheet_name}'")
             
-            # Ask user where to save
-            self.root.after(0, lambda: self.save_processed_excel(temp_path))
+            # Close the Excel file
+            excel_file.close()
+            
+            self.log_reasoning(f"Excel processing completed. All results saved to: {output_file_path}")
+            
+            # Show completion message
+            if not self.headless_mode:
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"File processed and saved to:\n{output_file_path}"))
                 
         except Exception as e:
             self.logger.error(f"Error processing Excel file: {e}")
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to process Excel file:\n{e}"))
+            if not self.headless_mode:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to process Excel file:\n{e}"))
             
     def save_processed_excel(self, temp_path: str):
         """Save the processed Excel file."""
