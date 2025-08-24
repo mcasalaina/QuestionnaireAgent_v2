@@ -120,24 +120,62 @@ Sources:
 
 ## Configuration
 
-### Environment Variables
+### Environment Setup
 
-Create a `.env` file in the project root with your Azure AI Foundry configuration:
+#### Step 1: Create Environment File
+
+Copy the template file and configure your values:
+
+```bash
+cp .env.template .env
+```
+
+Then edit `.env` with your actual Azure AI Foundry configuration values.
+
+### Required Environment Variables
+
+The application requires the following environment variables to be set in your `.env` file:
+
+| Variable | Description | Where to Find |
+|----------|-------------|---------------|
+| `AZURE_OPENAI_ENDPOINT` | Azure AI Foundry project endpoint | Azure AI Foundry Portal > Project Overview > Project Details |
+| `AZURE_OPENAI_MODEL_DEPLOYMENT` | Your deployed model name | Azure AI Foundry Portal > Models + Endpoints |
+| `BING_CONNECTION_ID` | Bing Search connection name | Azure AI Foundry Portal > Connected Resources |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Application Insights connection string | Azure Portal > Application Insights > Overview |
+| `AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED` | Enable AI content tracing (optional) | Set to `true` or `false` |
+
+**Example `.env` file:**
 
 ```bash
 AZURE_OPENAI_ENDPOINT=https://your-project.services.ai.azure.com/api/projects/your-project
 AZURE_OPENAI_MODEL_DEPLOYMENT=gpt-4.1
 BING_CONNECTION_ID=your-bing-connection-name
 APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpoint=https://your-region.in.applicationinsights.azure.com/;LiveEndpoint=https://your-region.livediagnostics.monitor.azure.com/;ApplicationId=your-app-id
+AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED=true
 ```
 
-**Finding your values:**
-- `AZURE_OPENAI_ENDPOINT`: Found in Azure AI Foundry portal under project overview
-- `AZURE_OPENAI_MODEL_DEPLOYMENT`: Your model deployment name from Models + Endpoints  
-- `BING_CONNECTION_ID`: Connection name (not ID) from Connected Resources in your project
-- `APPLICATIONINSIGHTS_CONNECTION_STRING`: Found in Azure Portal > Application Insights > Overview. Enables Azure AI Foundry tracing to monitor application performance, track agent interactions, and debug issues. Optional but recommended for production monitoring.
+**Important Security Notes:**
 
-**Important**: Never commit environment files (`.env`) to version control. The `.gitignore` file already excludes these files to prevent accidental commits.
+- Never commit your `.env` file to version control (it's already in `.gitignore`)
+- The `.env.template` file shows the required structure without sensitive values
+- Application Insights connection string enables Azure AI Foundry tracing for monitoring and debugging
+
+### Azure AI Foundry Tracing
+
+The application includes built-in Azure AI Foundry tracing integration that provides:
+
+- **Distributed Tracing**: Full visibility into multi-agent workflows
+- **Performance Monitoring**: Track execution times and bottlenecks  
+- **Gen AI Content Capture**: Record prompts and responses (when enabled)
+- **Error Tracking**: Detailed error context and stack traces
+- **Resource Usage**: Monitor token consumption and API calls
+
+Traces appear in:
+
+- **Azure AI Foundry Portal** → Tracing tab
+- **Azure Portal** → Application Insights → Transaction search
+
+Set `AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED=false` in production if you want to exclude AI content from traces for privacy reasons.
 
 ### FoundryAgentSession Helper
 
@@ -148,6 +186,7 @@ The `FoundryAgentSession` class in `utils/resource_manager.py` provides a contex
 3. **Cost Management**: Prevents accumulation of unused resources that could incur costs
 
 Usage example:
+
 ```python
 with FoundryAgentSession(client, model="gpt-4o-mini", 
                         name="my-agent", 
@@ -157,6 +196,7 @@ with FoundryAgentSession(client, model="gpt-4o-mini",
 ```
 
 The context manager handles:
+
 - Creating agent and thread resources on entry
 - Automatic cleanup on exit (even if exceptions occur)
 - Robust error handling during cleanup to prevent masking original exceptions
@@ -180,7 +220,7 @@ The tool uses Azure AI Foundry with integrated Bing search grounding. For altern
 
 ### Project Structure
 
-```
+```text
 QuestionnaireAgent_v2/
 ├── question_answerer.py         # Main GUI application
 ├── main.py                      # Legacy CLI entry point
