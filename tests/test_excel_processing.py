@@ -6,6 +6,7 @@ Test Excel processing functionality to verify the fix for issue #11
 import os
 import shutil
 from pathlib import Path
+from datetime import datetime
 
 # Add the parent directory to the path so we can import the main module
 import sys
@@ -28,7 +29,10 @@ class TestExcelProcessing:
         # Create output directory if it doesn't exist
         self.output_dir = Path(__file__).parent.parent / "output"
         self.output_dir.mkdir(exist_ok=True)
-        self.output_path = str(self.output_dir / "test_excel_processing_output.xlsx")
+        
+        # Create timestamped output filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_path = str(self.output_dir / f"test_excel_processing_output_{timestamp}.xlsx")
         
     def teardown_method(self):
         """Cleanup after each test method."""
@@ -74,8 +78,9 @@ class TestExcelProcessing:
     
     def test_save_processed_excel_method_robustness(self):
         """Test the save_processed_excel method with various scenarios."""
-        # Create a dummy file in the output directory
-        test_file_path = self.output_dir / "test_save_robustness.xlsx"
+        # Create a dummy file in the output directory with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        test_file_path = self.output_dir / f"test_save_robustness_{timestamp}.xlsx"
         
         try:
             # Create a test file

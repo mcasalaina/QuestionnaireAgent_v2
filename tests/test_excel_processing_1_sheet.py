@@ -5,6 +5,7 @@ Test for Excel processing functionality using the 1_sheet sample file.
 
 import os
 import sys
+from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from question_answerer import QuestionnaireAgentUI
 
@@ -21,8 +22,9 @@ def test_excel_processing_1_sheet():
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create output file in the output directory
-    output_file = os.path.join(output_dir, "test_excel_processing_1_sheet_output.xlsx")
+    # Create output file in the output directory with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = os.path.join(output_dir, f"test_excel_processing_1_sheet_output_{timestamp}.xlsx")
     
     try:
         # Create the application in headless mode
