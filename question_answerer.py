@@ -1019,6 +1019,10 @@ class QuestionnaireAgentUI:
         # Clear reasoning text to show fresh processing logs
         self.reasoning_text.delete(1.0, tk.END)
         
+        # Clear the question text box since we're starting Excel processing
+        if self.question_text:
+            self.question_text.delete(1.0, tk.END)
+        
         # Process Excel file in separate thread with both input and output paths
         thread = threading.Thread(target=self.process_excel_file, args=(input_file_path, output_file_path))
         thread.daemon = True
