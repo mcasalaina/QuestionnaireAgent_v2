@@ -123,6 +123,11 @@ class QuestionnaireAgentUI:
             # Set Azure SDK tracing implementation to OpenTelemetry
             os.environ["AZURE_SDK_TRACING_IMPLEMENTATION"] = "opentelemetry"
             
+            # Set service name for Application Analytics in Azure AI Foundry
+            # This maps to cloud_RoleName in Application Insights and enables the Application Analytics dashboard
+            if not os.environ.get("OTEL_SERVICE_NAME"):
+                os.environ["OTEL_SERVICE_NAME"] = "Questionnaire Agent V2"
+            
             # Get Application Insights connection string from environment variable
             connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
             
