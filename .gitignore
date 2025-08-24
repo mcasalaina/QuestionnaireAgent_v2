@@ -19,3 +19,6 @@ output/
 
 # VS Code settings
 .vscode/
+
+# Temporary files in tests directory
+tests/~*

@@ -10,3 +10,4 @@ aiohttp
 azure-monitor-opentelemetry
 opentelemetry-sdk
 azure-core-tracing-opentelemetry
+pytest>=6.0.0
