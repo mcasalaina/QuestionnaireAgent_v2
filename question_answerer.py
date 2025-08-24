@@ -120,8 +120,17 @@ class QuestionnaireAgentUI:
             content_recording = os.environ.get("AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED", "true").lower()
             os.environ["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] = content_recording
             
-            # Set Azure SDK tracing implementation to OpenTelemetry
+            # Set Azure SDK tracing implementation to OpenTelemetry BEFORE any Azure operations
             os.environ["AZURE_SDK_TRACING_IMPLEMENTATION"] = "opentelemetry"
+            
+            # Set service name for Application Analytics in Azure AI Foundry
+            # This maps to cloud_RoleName in Application Insights and enables the Application Analytics dashboard
+            if not os.environ.get("OTEL_SERVICE_NAME"):
+                os.environ["OTEL_SERVICE_NAME"] = "Questionnaire Agent V2"
+            
+            # Enable Azure SDK tracing with OpenTelemetry BEFORE configuring Azure Monitor
+            from azure.core.settings import settings
+            settings.tracing_implementation = "opentelemetry"
             
             # Get Application Insights connection string from environment variable
             connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
@@ -131,12 +140,14 @@ class QuestionnaireAgentUI:
                 self.logger.warning("   Set this in your .env file - get it from Azure Portal > Application Insights > Overview")
                 return False
             
-            # Enable Azure SDK tracing with OpenTelemetry BEFORE configuring Azure Monitor
-            from azure.core.settings import settings
-            settings.tracing_implementation = "opentelemetry"
-            
-            # Configure Azure Monitor tracing
-            configure_azure_monitor(connection_string=connection_string)
+            # Configure Azure Monitor tracing with enhanced settings for AI Foundry
+            configure_azure_monitor(
+                connection_string=connection_string,
+                # Enable additional instrumentation for better metrics capture
+                enable_live_metrics=True,
+                # Set sampling rate to 100% to capture all operations for now
+                sampling_ratio=1.0
+            )
             
             # Optional: Enable telemetry to console for debugging (uncomment if needed)
             # try:
@@ -564,12 +575,25 @@ class QuestionnaireAgentUI:
         self.log_reasoning(f"Created thread: {thread.id}")
         
         # Create message
+        prompt_content = f"Context: {context}\n\nQuestion: {question}\n\nPlease provide a comprehensive answer with supporting evidence and citations. Keep it under {char_limit} characters."
         message = self.project_client.agents.messages.create(
             thread_id=thread.id,
             role="user",
-            content=f"Context: {context}\n\nQuestion: {question}\n\nPlease provide a comprehensive answer with supporting evidence and citations. Keep it under {char_limit} characters."
+            content=prompt_content
         )
         self.log_reasoning(f"Created message: {message.id}")
+        
+        # Add span attributes for better metrics capture
+        if self.tracer:
+            current_span = trace.get_current_span()
+            if current_span:
+                # Add generative AI semantic convention attributes
+                current_span.set_attribute("gen_ai.system", "azure_ai_foundry")
+                current_span.set_attribute("gen_ai.operation.name", "chat_completion")
+                current_span.set_attribute("gen_ai.request.model", os.getenv("AZURE_OPENAI_MODEL_DEPLOYMENT", "unknown"))
+                current_span.set_attribute("gen_ai.usage.prompt_tokens", len(prompt_content.split()))  # Rough estimate
+                current_span.set_attribute("thread.id", thread.id)
+                current_span.set_attribute("agent.id", self.question_answerer_id)
         
         # Create and process run
         run = self.project_client.agents.runs.create_and_process(
@@ -579,11 +603,23 @@ class QuestionnaireAgentUI:
         
         self.log_reasoning(f"Run finished with status: {run.status}")
         
+        # Update span with completion attributes
+        if self.tracer:
+            current_span = trace.get_current_span()
+            if current_span:
+                current_span.set_attribute("run.status", run.status)
+                current_span.set_attribute("run.id", run.id)
+        
         # Check if the run failed
         if run.status == "failed":
             error_msg = f"Run failed: {run.last_error.message if run.last_error else 'Unknown error'}"
             self.log_reasoning(error_msg)
             self.logger.error(error_msg)
+            if self.tracer:
+                current_span = trace.get_current_span()
+                if current_span:
+                    current_span.set_attribute("error", True)
+                    current_span.set_attribute("error.message", error_msg)
             return None, []
         
         # Get messages
@@ -688,17 +724,36 @@ class QuestionnaireAgentUI:
         thread = self.project_client.agents.threads.create()
         
         # Create message
+        prompt_content = f"Question: {question}\n\nCandidate Answer: {answer}\n\nPlease validate this answer for factual correctness, completeness, and consistency. Respond with 'VALID' if acceptable or 'INVALID: [reason]' if not."
         message = self.project_client.agents.messages.create(
             thread_id=thread.id,
             role="user",
-            content=f"Question: {question}\n\nCandidate Answer: {answer}\n\nPlease validate this answer for factual correctness, completeness, and consistency. Respond with 'VALID' if acceptable or 'INVALID: [reason]' if not."
+            content=prompt_content
         )
+        
+        # Add span attributes for better metrics capture
+        if self.tracer:
+            current_span = trace.get_current_span()
+            if current_span:
+                current_span.set_attribute("gen_ai.system", "azure_ai_foundry")
+                current_span.set_attribute("gen_ai.operation.name", "chat_completion")
+                current_span.set_attribute("gen_ai.request.model", os.getenv("AZURE_OPENAI_MODEL_DEPLOYMENT", "unknown"))
+                current_span.set_attribute("gen_ai.usage.prompt_tokens", len(prompt_content.split()))
+                current_span.set_attribute("thread.id", thread.id)
+                current_span.set_attribute("agent.id", self.answer_checker_id)
         
         # Create and process run
         run = self.project_client.agents.runs.create_and_process(
             thread_id=thread.id,
             agent_id=self.answer_checker_id
         )
+        
+        # Update span with completion attributes
+        if self.tracer:
+            current_span = trace.get_current_span()
+            if current_span:
+                current_span.set_attribute("run.status", run.status)
+                current_span.set_attribute("run.id", run.id)
         
         # Get messages
         messages = self.project_client.agents.messages.list(thread_id=thread.id)
