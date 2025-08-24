@@ -65,6 +65,12 @@ class QuestionnaireAgentUI:
         else:
             self.root = None
         
+        # OpenTelemetry tracer for Azure AI Foundry tracing
+        self.tracer: Optional[Tracer] = None
+        
+        # Initialize tracing BEFORE Azure client initialization
+        self.initialize_tracing()
+        
         # Initialize Azure AI Project Client
         self.project_client = None
         self.init_azure_client()
@@ -76,12 +82,6 @@ class QuestionnaireAgentUI:
         
         # CLI output buffer for reasoning
         self.cli_output = []
-        
-        # OpenTelemetry tracer for Azure AI Foundry tracing
-        self.tracer: Optional[Tracer] = None
-        
-        # Initialize tracing
-        self.initialize_tracing()
         
         # Setup UI only if not in headless mode
         if not headless_mode:
@@ -120,6 +120,9 @@ class QuestionnaireAgentUI:
             content_recording = os.environ.get("AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED", "true").lower()
             os.environ["AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED"] = content_recording
             
+            # Set Azure SDK tracing implementation to OpenTelemetry
+            os.environ["AZURE_SDK_TRACING_IMPLEMENTATION"] = "opentelemetry"
+            
             # Get Application Insights connection string from environment variable
             connection_string = os.environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
             
@@ -128,8 +131,21 @@ class QuestionnaireAgentUI:
                 self.logger.warning("   Set this in your .env file - get it from Azure Portal > Application Insights > Overview")
                 return False
             
+            # Enable Azure SDK tracing with OpenTelemetry BEFORE configuring Azure Monitor
+            from azure.core.settings import settings
+            settings.tracing_implementation = "opentelemetry"
+            
             # Configure Azure Monitor tracing
             configure_azure_monitor(connection_string=connection_string)
+            
+            # Optional: Enable telemetry to console for debugging (uncomment if needed)
+            # try:
+            #     from azure.ai.agents.telemetry import enable_telemetry
+            #     import sys
+            #     enable_telemetry(destination=sys.stdout)
+            #     self.logger.info("✅ Console telemetry enabled for debugging")
+            # except ImportError:
+            #     pass  # azure-ai-agents telemetry not available
             
             # Create a tracer for custom spans
             self.tracer = trace.get_tracer(__name__)

@@ -9,3 +9,4 @@ playwright
 aiohttp
 azure-monitor-opentelemetry
 opentelemetry-sdk
+azure-core-tracing-opentelemetry
