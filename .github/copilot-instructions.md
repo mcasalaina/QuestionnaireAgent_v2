@@ -112,6 +112,7 @@ QuestionnaireAgent_v2/
 - No linting tools configured (flake8, black, etc.)
 - Tests use pytest and unittest frameworks
 - Resource cleanup is critical (see `utils/resource_manager.py`)
+- **Reasoning Log Guidelines**: Never include issue numbers (e.g., "Issue #10 fix:") in reasoning log messages. Users should only see clean, descriptive messages without development references.
 
 ### Architecture
 The application orchestrates three Azure AI Foundry agents:

@@ -465,7 +465,7 @@ class QuestionnaireAgentUI:
                 # Issue #10 fix: If we have a validated answer but no links, 
                 # don't throw away the answer - instead ask for links that support it
                 if validated_answer and not skip_answer_checker:
-                    self.log_reasoning("Issue #10 fix: Answer is validated but has no links")
+                    self.log_reasoning("Answer is validated but has no links")
                     self.log_reasoning("Next attempt will keep the validated answer and ask for supporting links")
                     
                     # Add special context for next iteration to find supporting links
@@ -658,7 +658,7 @@ class QuestionnaireAgentUI:
             last_attempt = attempt_history[-1] if attempt_history else None
             if last_attempt and last_attempt.get('special_instruction') == 'keep_answer_find_links':
                 self.log_reasoning("Question Answerer: Special instruction - keep validated answer and find supporting links")
-                prompt_content += "SPECIAL INSTRUCTION (Issue #10 Fix):\n"
+                prompt_content += "SPECIAL INSTRUCTION:\n"
                 prompt_content += f"The following answer has been validated as factually correct and complete:\n\n"
                 prompt_content += f'"{last_attempt["answer"]}"\n\n'
                 prompt_content += "DO NOT rewrite this answer. Instead, use your web search capabilities to find credible sources and documentation links that support the claims made in this answer. "
@@ -1367,7 +1367,7 @@ If a column doesn't exist, suggest a name for it."""
                     # Issue #10 fix: If we have a validated answer but no links, 
                     # don't throw away the answer - instead ask for links that support it
                     if validated_answer and not skip_answer_checker:
-                        self.log_reasoning("Issue #10 fix: Answer is validated but has no links")
+                        self.log_reasoning("Answer is validated but has no links")
                         self.log_reasoning("Next attempt will keep the validated answer and ask for supporting links")
                         
                         # Add special context for next iteration to find supporting links
