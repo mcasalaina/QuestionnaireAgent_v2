@@ -951,11 +951,50 @@ class QuestionnaireAgentUI:
                 import shutil
                 shutil.move(temp_path, save_path)
                 messagebox.showinfo("Success", f"File processed and saved to:\n{save_path}")
+                
+                # Verify that the file was successfully saved and the temporary file no longer exists
+                if os.path.exists(save_path) and not os.path.exists(temp_path):
+                    self.logger.info(f"Excel file successfully saved to: {save_path}")
+                elif os.path.exists(save_path) and os.path.exists(temp_path):
+                    # File was saved but temp file still exists - try to clean it up silently
+                    try:
+                        os.unlink(temp_path)
+                        self.logger.info(f"Cleaned up temporary file: {temp_path}")
+                    except Exception as cleanup_error:
+                        # Log the cleanup error but don't show it to the user since the main operation succeeded
+                        self.logger.warning(f"Could not clean up temporary file {temp_path}: {cleanup_error}")
+                else:
+                    # This shouldn't happen, but log it for debugging
+                    self.logger.warning(f"Unexpected state after file save - save_path exists: {os.path.exists(save_path)}, temp_path exists: {os.path.exists(temp_path)}")
             else:
-                os.unlink(temp_path)
+                # User cancelled the save dialog - clean up temp file silently
+                try:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                        self.logger.info(f"User cancelled save dialog, cleaned up temporary file: {temp_path}")
+                    else:
+                        self.logger.info("User cancelled save dialog, temporary file already cleaned up")
+                except Exception as cleanup_error:
+                    # Log cleanup errors but don't show them to the user since they cancelled the operation
+                    self.logger.warning(f"Could not clean up temporary file after user cancellation {temp_path}: {cleanup_error}")
         except Exception as e:
-            self.logger.error(f"Error saving Excel file: {e}")
-            messagebox.showerror("Error", f"Failed to save Excel file:\n{e}")
+            # Only show errors that actually prevent the file from being saved
+            # Check if the save was actually successful despite the error
+            if 'save_path' in locals() and save_path and os.path.exists(save_path):
+                # File was saved successfully, so don't show the scary error dialog
+                self.logger.warning(f"File was saved successfully to {save_path} but encountered error during cleanup: {e}")
+                messagebox.showinfo("Success", f"File processed and saved to:\n{save_path}\n\n(Note: Encountered minor cleanup issue, but your file was saved successfully)")
+            else:
+                # Actual save failure - show the error
+                self.logger.error(f"Error saving Excel file: {e}")
+                messagebox.showerror("Error", f"Failed to save Excel file:\n{e}")
+                
+                # Try to clean up temp file even if save failed
+                try:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+                except Exception as cleanup_error:
+                    self.logger.warning(f"Could not clean up temporary file after save failure {temp_path}: {cleanup_error}")
             
     def identify_columns_with_llm(self, df: pd.DataFrame) -> Tuple[str, str, str]:
         """Use LLM to identify question, answer, and documentation columns."""
