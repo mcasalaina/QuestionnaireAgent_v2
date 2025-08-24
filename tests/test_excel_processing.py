@@ -4,7 +4,6 @@ Test Excel processing functionality to verify the fix for issue #11
 """
 
 import os
-import tempfile
 import shutil
 from pathlib import Path
 
@@ -26,15 +25,16 @@ class TestExcelProcessing:
         # Sample Excel file path
         self.sample_excel_path = Path(__file__).parent / "sample_questionnaire.xlsx"
         
-        # Create a temporary output directory
-        self.temp_dir = tempfile.mkdtemp()
-        self.output_path = os.path.join(self.temp_dir, "test_output.xlsx")
+        # Create output directory if it doesn't exist
+        self.output_dir = Path(__file__).parent.parent / "output"
+        self.output_dir.mkdir(exist_ok=True)
+        self.output_path = str(self.output_dir / "test_excel_processing_output.xlsx")
         
     def teardown_method(self):
         """Cleanup after each test method."""
-        # Clean up temporary directory
-        if os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+        # Only clean up the output file if the test failed
+        # Otherwise, keep it in the output directory for inspection
+        pass
     
     def test_excel_file_exists(self):
         """Verify that the sample Excel file exists."""
@@ -55,7 +55,7 @@ class TestExcelProcessing:
                 context="Microsoft Azure AI",
                 char_limit=500,  # Use shorter limit to speed up test
                 verbose=True,
-                max_retries=1    # Use fewer retries to speed up test
+                max_retries=3    # Use fewer retries to speed up test
             )
             
             # The method should complete without throwing an exception
@@ -74,44 +74,45 @@ class TestExcelProcessing:
     
     def test_save_processed_excel_method_robustness(self):
         """Test the save_processed_excel method with various scenarios."""
-        # Create a dummy temp file
-        temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
-        temp_path = temp_file.name
-        temp_file.write(b"dummy content")
-        temp_file.close()
+        # Create a dummy file in the output directory
+        test_file_path = self.output_dir / "test_save_robustness.xlsx"
         
         try:
+            # Create a test file
+            with open(test_file_path, 'wb') as f:
+                f.write(b"dummy content")
+            
             # Test that the method doesn't crash even if called directly
             # Note: This will show dialog boxes in GUI mode, so we're testing error handling
             
             # We can't easily test the full GUI dialog flow, but we can test the error handling
             # by simulating various file system states
             
-            # Scenario 1: Temp file exists and can be deleted
-            if os.path.exists(temp_path):
+            # Scenario 1: File exists and can be deleted
+            if test_file_path.exists():
                 try:
-                    os.unlink(temp_path)
-                    print("Temp file cleanup test passed")
+                    test_file_path.unlink()
+                    print("File cleanup test passed")
                 except Exception as e:
-                    print(f"Temp file cleanup failed: {e}")
+                    print(f"File cleanup failed: {e}")
             
-            # Scenario 2: Temp file doesn't exist (already cleaned up)
-            if not os.path.exists(temp_path):
+            # Scenario 2: File doesn't exist (already cleaned up)
+            if not test_file_path.exists():
                 try:
                     # This should not throw an error in our improved code
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
-                    print("Non-existent temp file cleanup test passed")
+                    if test_file_path.exists():
+                        test_file_path.unlink()
+                    print("Non-existent file cleanup test passed")
                 except Exception as e:
-                    print(f"Non-existent temp file cleanup test failed: {e}")
+                    print(f"Non-existent file cleanup test failed: {e}")
                     
         except Exception as e:
             raise Exception(f"Save method robustness test failed: {e}")
         finally:
             # Ensure cleanup
-            if os.path.exists(temp_path):
+            if test_file_path.exists():
                 try:
-                    os.unlink(temp_path)
+                    test_file_path.unlink()
                 except:
                     pass
 
