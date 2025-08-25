@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Test Excel processing functionality to verify the fix for issue #11
+Test Excel processing functionality to verify the fix for issue #11 (LIVE VERSION)
+
+This test uses the live Azure OpenAI service and requires valid Azure credentials.
+For testing without Azure credentials, use test_mock_excel_processing.py instead.
 """
 
 import os
