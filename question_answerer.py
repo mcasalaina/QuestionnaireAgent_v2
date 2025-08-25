@@ -61,7 +61,19 @@ class QuestionnaireAgentUI:
             self.root = tk.Tk()
             self.root.title("Questionnaire Multiagent")
             self.root.geometry("1200x800")
-            self.root.state('zoomed')  # Open maximized on Windows
+            
+            # Maximize window based on OS
+            import platform
+            try:
+                if platform.system() == "Windows":
+                    self.root.state('zoomed')  # Windows maximized
+                elif platform.system() == "Linux":
+                    self.root.attributes('-zoomed', True)  # Linux maximized
+                elif platform.system() == "Darwin":  # macOS
+                    self.root.attributes('-zoomed', True)  # macOS maximized
+            except tk.TclError:
+                # Fallback if maximizing fails - just use the geometry
+                pass
         else:
             self.root = None
         
@@ -80,12 +92,34 @@ class QuestionnaireAgentUI:
         self.answer_checker_id = None
         self.link_checker_id = None
         
-        # CLI output buffer for reasoning
-        self.cli_output = []
-        
         # Setup UI only if not in headless mode
         if not headless_mode:
             self.setup_ui()
+            
+            # Status bar variables (only needed for GUI mode and after root is created)
+            self.status_working = tk.StringVar(value="Idle")
+            self.status_agent = tk.StringVar(value="")
+            self.status_time = tk.StringVar(value="00:00")
+            self.status_excel_input = tk.StringVar(value="")
+            self.status_excel_output = tk.StringVar(value="")
+            self.status_excel_question = tk.StringVar(value="")
+            
+            # Timer variables
+            self.start_time = None
+            self.timer_job = None
+            
+            # Now setup the status bar after StringVars are created
+            self.setup_status_bar()
+        else:
+            # For headless mode, create dummy status variables
+            self.status_working = None
+            self.status_agent = None
+            self.status_time = None
+            self.status_excel_input = None
+            self.status_excel_output = None
+            self.status_excel_question = None
+            self.start_time = None
+            self.timer_job = None
         
     def init_azure_client(self):
         """Initialize Azure AI Project Client with credentials from .env file."""
@@ -173,7 +207,7 @@ class QuestionnaireAgentUI:
         """Setup the main UI layout."""
         # Create main paned window
         main_paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        main_paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 0))
         
         # Left panel
         left_frame = ttk.Frame(main_paned)
@@ -185,6 +219,7 @@ class QuestionnaireAgentUI:
         
         self.setup_left_panel(left_frame)
         self.setup_right_panel(right_frame)
+        # Note: status bar setup is called after StringVars are created
         
     def setup_left_panel(self, parent):
         """Setup the left panel with input controls."""
@@ -275,6 +310,166 @@ class QuestionnaireAgentUI:
         self.reasoning_text.insert(tk.END, "Reasoning will appear here...")
         self.reasoning_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
         
+    def setup_status_bar(self):
+        """Setup the status bar at the bottom of the window."""
+        # Create status bar frame
+        status_frame = ttk.Frame(self.root)
+        status_frame.pack(fill=tk.X, padx=10, pady=(5, 10))
+        
+        # Add separator line above status bar
+        separator = ttk.Separator(status_frame, orient=tk.HORIZONTAL)
+        separator.pack(fill=tk.X, pady=(0, 5))
+        
+        # Create main status bar content
+        status_content = ttk.Frame(status_frame)
+        status_content.pack(fill=tk.X)
+        
+        # Left side: Working status and current agent
+        left_frame = ttk.Frame(status_content)
+        left_frame.pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Status indicator
+        status_label = ttk.Label(left_frame, text="Status:")
+        status_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.status_working_label = ttk.Label(left_frame, textvariable=self.status_working, 
+                                              font=('Segoe UI', 9, 'bold'))
+        self.status_working_label.pack(side=tk.LEFT, padx=(0, 15))
+        
+        # Current agent
+        agent_label = ttk.Label(left_frame, text="Agent:")
+        agent_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.status_agent_label = ttk.Label(left_frame, textvariable=self.status_agent,
+                                            font=('Segoe UI', 9))
+        self.status_agent_label.pack(side=tk.LEFT, padx=(0, 15))
+        
+        # Elapsed time
+        time_label = ttk.Label(left_frame, text="Time:")
+        time_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.status_time_label = ttk.Label(left_frame, textvariable=self.status_time,
+                                           font=('Segoe UI', 9, 'bold'))
+        self.status_time_label.pack(side=tk.LEFT)
+        
+        # Right side: Excel information (only shown when processing Excel)
+        self.excel_frame = ttk.Frame(status_content)
+        # Excel frame is packed/unpacked dynamically based on mode
+        
+        # Excel input file
+        input_label = ttk.Label(self.excel_frame, text="Input:")
+        input_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.status_excel_input_label = ttk.Label(self.excel_frame, textvariable=self.status_excel_input,
+                                                  font=('Segoe UI', 9))
+        self.status_excel_input_label.pack(side=tk.LEFT, padx=(0, 15))
+        
+        # Excel output file
+        output_label = ttk.Label(self.excel_frame, text="Output:")
+        output_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.status_excel_output_label = ttk.Label(self.excel_frame, textvariable=self.status_excel_output,
+                                                   font=('Segoe UI', 9))
+        self.status_excel_output_label.pack(side=tk.LEFT, padx=(0, 15))
+        
+        # Current question number
+        question_label = ttk.Label(self.excel_frame, text="Question:")
+        question_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.status_excel_question_label = ttk.Label(self.excel_frame, textvariable=self.status_excel_question,
+                                                     font=('Segoe UI', 9, 'bold'))
+        self.status_excel_question_label.pack(side=tk.LEFT)
+        
+    def start_working(self, agent_name=""):
+        """Start working mode - begin timer and update status."""
+        if self.headless_mode or not self.status_working:
+            return
+            
+        self.status_working.set("Working")
+        self.status_working_label.config(foreground="green")
+        self.status_agent.set(agent_name)
+        
+        # Start timer
+        import time
+        self.start_time = time.time()
+        self.update_timer()
+        
+    def stop_working(self):
+        """Stop working mode - stop timer and update status."""
+        if self.headless_mode or not self.status_working:
+            return
+            
+        self.status_working.set("Idle")
+        self.status_working_label.config(foreground="black")
+        self.status_agent.set("")
+        
+        # Stop timer
+        if self.timer_job:
+            self.root.after_cancel(self.timer_job)
+            self.timer_job = None
+        self.start_time = None
+        self.status_time.set("00:00")
+        
+    def update_agent(self, agent_name):
+        """Update the current agent being processed."""
+        if self.headless_mode or not self.status_agent:
+            return
+        self.status_agent.set(agent_name)
+        
+    def update_timer(self):
+        """Update the elapsed time display."""
+        if self.headless_mode or not self.start_time or not self.status_time:
+            return
+            
+        import time
+        elapsed = int(time.time() - self.start_time)
+        minutes = elapsed // 60
+        seconds = elapsed % 60
+        self.status_time.set(f"{minutes:02d}:{seconds:02d}")
+        
+        # Schedule next update
+        self.timer_job = self.root.after(1000, self.update_timer)
+        
+    def show_excel_mode(self, input_path, output_path):
+        """Show Excel processing information in status bar."""
+        if self.headless_mode or not self.status_excel_input:
+            return
+            
+        # Show file paths (truncate if too long)
+        import os
+        input_name = os.path.basename(input_path)
+        output_name = os.path.basename(output_path)
+        
+        self.status_excel_input.set(input_name)
+        self.status_excel_output.set(output_name)
+        self.status_excel_question.set("")
+        
+        # Pack the Excel frame to show it
+        self.excel_frame.pack(side=tk.RIGHT, padx=(10, 0))
+        
+    def hide_excel_mode(self):
+        """Hide Excel processing information from status bar."""
+        if self.headless_mode or not self.status_excel_input:
+            return
+            
+        # Clear Excel variables
+        self.status_excel_input.set("")
+        self.status_excel_output.set("")
+        self.status_excel_question.set("")
+        
+        # Unpack the Excel frame to hide it
+        self.excel_frame.pack_forget()
+        
+    def update_excel_question(self, question_number, total_questions=None):
+        """Update the current question number being processed."""
+        if self.headless_mode or not self.status_excel_question:
+            return
+            
+        if total_questions:
+            self.status_excel_question.set(f"{question_number}/{total_questions}")
+        else:
+            self.status_excel_question.set(str(question_number))
+        
     def log_reasoning(self, message: str):
         """Add a message to the reasoning text area or CLI output."""
         if self.headless_mode:
@@ -297,6 +492,10 @@ class QuestionnaireAgentUI:
         self.docs_text.delete(1.0, tk.END)
         self.reasoning_text.delete(1.0, tk.END)
         
+        # Start working mode
+        self.start_working("Initializing")
+        self.hide_excel_mode()  # Ensure Excel mode is hidden for single questions
+        
         # Get input values
         question = self.question_text.get(1.0, tk.END).strip()
         context = self.context_entry.get().strip()
@@ -306,6 +505,7 @@ class QuestionnaireAgentUI:
         if not question:
             messagebox.showwarning("Input Required", "Please enter a question.")
             self.ask_button.config(state=tk.NORMAL)
+            self.stop_working()
             return
             
         # Run processing in separate thread
@@ -338,9 +538,10 @@ class QuestionnaireAgentUI:
                 self.root.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {error_msg}"))
             return False, f"Error: {error_msg}", []
         finally:
-            # Re-enable button
+            # Re-enable button and stop working mode
             if not self.headless_mode:
                 self.root.after(0, lambda: self.ask_button.config(state=tk.NORMAL))
+                self.root.after(0, lambda: self.stop_working())
     
     def _execute_workflow(self, question: str, context: str, char_limit: int, max_retries: int) -> Tuple[bool, str, List[str]]:
         """Internal method to execute the multi-agent workflow."""
@@ -643,6 +844,9 @@ class QuestionnaireAgentUI:
     
     def _execute_question_answerer(self, question: str, context: str, char_limit: int, attempt_history: list = None) -> Tuple[Optional[str], List[str]]:
         """Internal method to execute Question Answerer agent operations."""
+        # Update status bar
+        self.update_agent("Question Answerer")
+        
         # Create thread
         thread = self.project_client.agents.threads.create()
         self.log_reasoning(f"Created thread: {thread.id}")
@@ -823,6 +1027,9 @@ class QuestionnaireAgentUI:
     
     def _execute_answer_checker(self, question: str, answer: str) -> Tuple[bool, str]:
         """Internal method to execute Answer Checker agent operations."""
+        # Update status bar
+        self.update_agent("Answer Checker")
+        
         self.log_reasoning("Answer Checker: Starting validation...")
         
         # Create thread
@@ -903,6 +1110,9 @@ class QuestionnaireAgentUI:
     
     def _execute_link_checker(self, links: List[str]) -> Tuple[bool, List[str], str]:
         """Internal method to execute Link Checker agent operations."""
+        # Update status bar
+        self.update_agent("Link Checker")
+        
         import requests
         
         # First check: Must have at least one URL
@@ -1023,6 +1233,10 @@ class QuestionnaireAgentUI:
         if self.question_text:
             self.question_text.delete(1.0, tk.END)
         
+        # Start Excel processing mode
+        self.start_working("Excel Processing")
+        self.show_excel_mode(input_file_path, output_file_path)
+        
         # Process Excel file in separate thread with both input and output paths
         thread = threading.Thread(target=self.process_excel_file, args=(input_file_path, output_file_path))
         thread.daemon = True
@@ -1075,6 +1289,12 @@ class QuestionnaireAgentUI:
                 wb = load_workbook(output_file_path)
                 ws = wb[sheet_name]
                 
+                # Count total questions in this sheet first
+                total_questions_in_sheet = 0
+                for _, row in df.iterrows():
+                    if pd.notna(row[question_col]) and str(row[question_col]).strip():
+                        total_questions_in_sheet += 1
+                
                 # Process each question
                 questions_processed = 0
                 questions_attempted = 0
@@ -1083,6 +1303,11 @@ class QuestionnaireAgentUI:
                         question = str(row[question_col]).strip()
                         questions_attempted += 1
                         self.log_reasoning(f"Processing question {idx + 1}: {question[:50]}...")
+                        
+                        # Update status bar with current question number
+                        if not self.headless_mode:
+                            self.root.after(0, lambda qnum=questions_attempted, qtotal=total_questions_in_sheet: 
+                                           self.update_excel_question(qnum, qtotal))
                         
                         # Update the Question box to show current question being processed
                         if not self.headless_mode:
@@ -1139,6 +1364,11 @@ class QuestionnaireAgentUI:
             self.logger.error(f"Error processing Excel file: {e}")
             if not self.headless_mode:
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to process Excel file:\n{e}"))
+        finally:
+            # Stop working mode and hide Excel mode
+            if not self.headless_mode:
+                self.root.after(0, lambda: self.stop_working())
+                self.root.after(0, lambda: self.hide_excel_mode())
             
     def save_processed_excel(self, temp_path: str):
         """Save the processed Excel file."""
