@@ -2161,6 +2161,15 @@ Only return existing column names. Do not suggest new column names."""
                 success, answer, links = self.process_single_question_cli(question, context, char_limit, False, max_retries)
                 
                 if success:
+                    # Show answer preview and link count in verbose mode
+                    if verbose:
+                        # Show beginning of the answer (first 100 characters)
+                        answer_preview = answer[:100] + "..." if len(answer) > 100 else answer
+                        print(f"Answer: {answer_preview}")
+                        # Show how many links were found
+                        link_count = len(links) if links else 0
+                        print(f"Found {link_count} documentation links")
+                    
                     # Update the answer column in dataframe
                     df.at[idx, answer_col] = answer
                     
