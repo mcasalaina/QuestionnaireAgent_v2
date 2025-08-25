@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Test for Excel processing functionality using the 1_sheet sample file.
+Test for Excel processing functionality using the 1_sheet sample file (LIVE VERSION).
+
+This test uses the live Azure OpenAI service and requires valid Azure credentials.
+For testing without Azure credentials, use test_mock_excel_processing_1_sheet.py instead.
 """
 
 import os

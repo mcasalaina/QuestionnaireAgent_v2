@@ -33,7 +33,7 @@ load_dotenv(override=True)
 class QuestionnaireAgentUI:
     """Main UI application for the Questionnaire Agent."""
     
-    def __init__(self, headless_mode=False, max_retries=10):
+    def __init__(self, headless_mode=False, max_retries=10, mock_mode=False):
         # Setup logging first - only for our app, not Azure SDK noise
         logging.basicConfig(level=logging.WARNING)  # Set root to WARNING to silence Azure SDK
         self.logger = logging.getLogger(__name__)
@@ -49,6 +49,9 @@ class QuestionnaireAgentUI:
         
         # Store maximum retries configuration
         self.max_retries = max_retries
+        
+        # Store mock mode flag
+        self.mock_mode = mock_mode
         
         if not headless_mode:
             # Enable high DPI awareness on Windows
@@ -80,12 +83,18 @@ class QuestionnaireAgentUI:
         # OpenTelemetry tracer for Azure AI Foundry tracing
         self.tracer: Optional[Tracer] = None
         
-        # Initialize tracing BEFORE Azure client initialization
-        self.initialize_tracing()
+        # Initialize tracing BEFORE Azure client initialization (skip in mock mode)
+        if not self.mock_mode:
+            self.initialize_tracing()
+        else:
+            self.tracer = None
         
-        # Initialize Azure AI Project Client
+        # Initialize Azure AI Project Client (skip in mock mode)
         self.project_client = None
-        self.init_azure_client()
+        if not self.mock_mode:
+            self.init_azure_client()
+        else:
+            self.logger.info("Mock mode enabled - skipping Azure client initialization")
         
         # Agent IDs will be set when agents are created
         self.question_answerer_id = None
@@ -747,6 +756,14 @@ class QuestionnaireAgentUI:
             
     def create_agents(self):
         """Create the three Azure AI Foundry agents."""
+        # Skip agent creation in mock mode
+        if self.mock_mode:
+            self.log_reasoning("Mock mode enabled - skipping Azure agent creation")
+            self.question_answerer_id = "mock_question_answerer"
+            self.answer_checker_id = "mock_answer_checker"
+            self.link_checker_id = "mock_link_checker"
+            return
+            
         try:
             self.log_reasoning("Creating Azure AI Foundry agents...")
             
@@ -847,6 +864,10 @@ class QuestionnaireAgentUI:
     
     def _execute_question_answerer(self, question: str, context: str, char_limit: int, attempt_history: list = None) -> Tuple[Optional[str], List[str]]:
         """Internal method to execute Question Answerer agent operations."""
+        # Check for mock mode first
+        if self.mock_mode:
+            return self._execute_question_answerer_mock(question, context, char_limit, attempt_history)
+        
         # Update status bar
         self.update_agent("Question Answerer")
         
@@ -1030,6 +1051,10 @@ class QuestionnaireAgentUI:
     
     def _execute_answer_checker(self, question: str, answer: str) -> Tuple[bool, str]:
         """Internal method to execute Answer Checker agent operations."""
+        # Check for mock mode first
+        if self.mock_mode:
+            return self._execute_answer_checker_mock(question, answer)
+        
         # Update status bar
         self.update_agent("Answer Checker")
         
@@ -1113,6 +1138,10 @@ class QuestionnaireAgentUI:
     
     def _execute_link_checker(self, links: List[str]) -> Tuple[bool, List[str], str]:
         """Internal method to execute Link Checker agent operations."""
+        # Check for mock mode first
+        if self.mock_mode:
+            return self._execute_link_checker_mock(links)
+        
         # Update status bar
         self.update_agent("Link Checker")
         
@@ -1151,6 +1180,123 @@ class QuestionnaireAgentUI:
                 return True, valid_links, f"All {len(valid_links)} links are valid"
         else:
             return False, [], "No valid documentation URLs found after validation"
+    
+    # Mock implementation methods for testing
+    def _execute_question_answerer_mock(self, question: str, context: str, char_limit: int, attempt_history: list = None) -> Tuple[Optional[str], List[str]]:
+        """Mock implementation of Question Answerer for testing."""
+        self.log_reasoning("Question Answerer (MOCK): Generating mock response")
+        
+        # Generate a contextual mock answer
+        mock_answer = f"Based on the {context} context, regarding '{question[:50]}...': "
+        
+        if "azure" in question.lower():
+            mock_answer += "Microsoft Azure provides comprehensive cloud services including AI, compute, storage, and networking capabilities. "
+        elif "ai" in question.lower() or "artificial intelligence" in question.lower():
+            mock_answer += "Artificial Intelligence capabilities are available through various cloud platforms and services. "
+        elif "video" in question.lower():
+            mock_answer += "Video processing and generation capabilities are available through modern AI services. "
+        else:
+            mock_answer += "This is a comprehensive answer to your question with relevant information and supporting documentation. "
+        
+        mock_answer += "For detailed information and documentation, please refer to the official Microsoft resources."
+        
+        # Ensure we stay under the character limit
+        if len(mock_answer) > char_limit:
+            mock_answer = mock_answer[:char_limit-3] + "..."
+        
+        # Always include Microsoft.com as a documentation link
+        mock_links = ["https://www.microsoft.com"]
+        
+        self.log_reasoning(f"Question Answerer (MOCK): Generated {len(mock_answer)} character response with {len(mock_links)} link(s)")
+        
+        return mock_answer, mock_links
+    
+    def _execute_answer_checker_mock(self, question: str, answer: str) -> Tuple[bool, str]:
+        """Mock implementation of Answer Checker for testing."""
+        self.log_reasoning("Answer Checker (MOCK): Starting validation...")
+        self.log_reasoning("Answer Checker (MOCK): APPROVED the answer")
+        return True, "VALID"
+    
+    def _execute_link_checker_mock(self, links: List[str]) -> Tuple[bool, List[str], str]:
+        """Mock implementation of Link Checker for testing."""
+        self.log_reasoning(f"Link Checker (MOCK): Validating {len(links)} URLs")
+        
+        # Microsoft.com should always be valid, so this will pass
+        valid_links = []
+        for link in links:
+            if "microsoft.com" in link.lower():
+                valid_links.append(link)
+                self.log_reasoning(f"Link Checker (MOCK): ✓ {link} (HTTP 200)")
+            else:
+                # For testing purposes, let's assume other URLs are also valid in mock mode
+                valid_links.append(link)
+                self.log_reasoning(f"Link Checker (MOCK): ✓ {link} (Mock validation)")
+        
+        if valid_links:
+            return True, valid_links, f"All {len(valid_links)} links are valid (mock validation)"
+        else:
+            # This should not happen with our mock Question Answerer, but handle it gracefully
+            return False, [], "No links provided for validation"
+    
+    def identify_columns_mock(self, df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Mock implementation of column identification for testing."""
+        self.log_reasoning("Column Identification (MOCK): Analyzing columns...")
+        
+        # Simple heuristic-based column identification for mock mode
+        columns = df.columns.tolist()
+        question_col = None
+        answer_col = None
+        docs_col = None
+        
+        # Look for question-like columns
+        for col in columns:
+            col_lower = col.lower()
+            if any(word in col_lower for word in ['question', 'q', 'query', 'ask']):
+                question_col = col
+                break
+        
+        # Look for answer-like columns
+        for col in columns:
+            col_lower = col.lower()
+            if any(word in col_lower for word in ['answer', 'response', 'reply', 'a', 'result']):
+                answer_col = col
+                break
+        
+        # Look for documentation columns
+        for col in columns:
+            col_lower = col.lower()
+            if any(word in col_lower for word in ['doc', 'link', 'ref', 'source', 'documentation', 'url']):
+                docs_col = col
+                break
+        
+        # If we couldn't find obvious matches, make educated guesses based on position and content
+        if not question_col and len(columns) >= 1:
+            # Check first few columns for question-like content
+            for i, col in enumerate(columns[:3]):
+                sample_data = df[col].dropna().head(3).astype(str).tolist()
+                if any('?' in str(item) for item in sample_data):
+                    question_col = col
+                    break
+        
+        if not answer_col and len(columns) >= 2:
+            # Look for an empty or mostly empty column that could be for answers
+            for col in columns:
+                if col != question_col:
+                    empty_ratio = df[col].isna().sum() / len(df)
+                    if empty_ratio > 0.5:  # More than 50% empty
+                        answer_col = col
+                        break
+        
+        # If still no answer column, use the second column if available
+        if not answer_col and len(columns) >= 2:
+            for col in columns:
+                if col != question_col:
+                    answer_col = col
+                    break
+        
+        self.log_reasoning(f"Column Identification (MOCK): Question='{question_col}', Answer='{answer_col}', Docs='{docs_col}'")
+        
+        return question_col, answer_col, docs_col
         
     def extract_links_and_clean(self, text: str) -> Tuple[str, List[str]]:
         """Extract URLs from text and return cleaned text and list of URLs."""
@@ -1461,6 +1607,18 @@ class QuestionnaireAgentUI:
             
     def identify_columns_with_llm(self, df: pd.DataFrame) -> Tuple[str, str, str]:
         """Use LLM to identify question, answer, and documentation columns."""
+        # Check for mock mode first
+        if self.mock_mode:
+            question_col, answer_col, docs_col = self.identify_columns_mock(df)
+            # Convert None to fallback strings for GUI mode
+            if not question_col:
+                question_col = self.identify_question_column(df)
+            if not answer_col:
+                answer_col = self.identify_answer_column(df)
+            if not docs_col:
+                docs_col = self.identify_docs_column(df)
+            return question_col, answer_col, docs_col
+            
         try:
             # Create a prompt with column names and sample data
             column_info = []
@@ -1680,6 +1838,10 @@ If a column doesn't exist, suggest a name for it."""
             
     def identify_columns_with_llm_cli(self, df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """Use LLM to identify question, answer, and documentation columns for CLI mode."""
+        # Check for mock mode first
+        if self.mock_mode:
+            return self.identify_columns_mock(df)
+            
         try:
             # Create a prompt with column names and sample data
             column_info = []
@@ -2059,6 +2221,7 @@ def create_cli_parser():
     parser.add_argument('--import-excel', type=str, metavar='PATH', help='Path to an Excel file to process in batch')
     parser.add_argument('--output-excel', type=str, metavar='PATH', help='Path where the processed Excel file will be written')
     parser.add_argument('--verbose', action='store_true', default=True, help='Enable verbose/reasoning log output (default: True)')
+    parser.add_argument('--mock', action='store_true', help='Enable mock mode for testing (does not require Azure credentials)')
     
     return parser
 
@@ -2095,7 +2258,7 @@ def main():
             args.output_excel = str(input_path.parent / f"{input_path.stem}.answered.xlsx")
         
         try:
-            app = QuestionnaireAgentUI(headless_mode=True, max_retries=args.max_retries)
+            app = QuestionnaireAgentUI(headless_mode=True, max_retries=args.max_retries, mock_mode=args.mock)
             
             if args.question:
                 # Process single question
