@@ -8,8 +8,9 @@ Always reference these instructions first and fallback to search or bash command
 
 - If you're in VS Code and you're asked to fix issues, always make a branch first.
 - When asked to interact with GitHub, use its CLI if needed.
-- Use the existing tests wherever possible. Ask a single question first. Use test_excel_processing_1_sheet.py if you need to test a single sheet.
+- Use the existing tests wherever possible. Ask a single question first. Use test_mock_excel_processing_1_sheet.py for fast mock testing, or test_live_excel_processing_1_sheet.py if you need to test against live Azure.
 - Only make a new test class if absolutely necessary.
+- Prefer mock tests (`test_mock_*.py`) for development - they're faster and don't require Azure credentials.
 
 ### Bootstrap and Setup
 - Install Python dependencies: `pip install -r requirements.txt` -- takes 2-3 minutes on first install. NEVER CANCEL. Set timeout to 5+ minutes.
@@ -33,9 +34,31 @@ APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpo
 ### Running and Testing
 - Run GUI application: `python3 question_answerer.py`
 - Run CLI application: `python3 question_answerer.py --question "Your question here" --verbose`
+- Run CLI application in mock mode: `python3 question_answerer.py --question "Your question here" --mock --verbose`
 - Check CLI help: `python3 question_answerer.py --help`
 - Run tests: `python3 -m pytest tests/test_resource_cleanup.py -v` -- takes 5-10 seconds.
 - Run tests with unittest: `python3 -m unittest discover tests/ -v` (note: some tests have import issues due to missing main module)
+
+#### Test Types
+The repository now contains two types of tests:
+
+**Mock Tests (No Azure credentials required):**
+- `test_mock_azure_question.py` - Mock Azure questions using mock mode
+- `test_mock_excel_processing.py` - Mock Excel processing tests
+- `test_mock_excel_processing_1_sheet.py` - Mock Excel processing with single sheet
+- Use `mock_mode=True` parameter or `--mock` CLI flag
+- Fast execution, predictable results, work without internet/credentials
+- Question Answerer returns mock answers with https://www.microsoft.com link
+- Answer Checker always returns "VALID"
+- Link Checker validates microsoft.com successfully
+
+**Live Tests (Require Azure credentials and .env setup):**
+- `test_live_azure_question.py` - Live Azure questions using real Azure OpenAI
+- `test_live_excel_processing.py` - Live Excel processing tests
+- `test_live_excel_processing_1_sheet.py` - Live Excel processing with single sheet
+- Require valid Azure credentials in .env file and `az login`
+- Slower execution, real API calls, variable results based on AI responses
+- Use for integration testing and validating actual Azure functionality
 
 ## Validation
 
@@ -52,8 +75,22 @@ APPLICATIONINSIGHTS_CONNECTION_STRING=InstrumentationKey=your-key;IngestionEndpo
 
 ### Test Validation
 - `python3 -m pytest tests/test_resource_cleanup.py -v` should pass all 15 tests in under 1 second
+- `python3 -m pytest tests/test_mock_azure_question.py -v` should pass all mock tests in under 1 second (no Azure credentials required)
+- `python3 tests/test_mock_excel_processing_1_sheet.py` should pass mock Excel test in under 10 seconds (no Azure credentials required)
 - Tests validate Azure AI Foundry resource cleanup and error handling
 - Note: `tests/test_questionnaire_agent.py` has import issues (references non-existent `main` module)
+
+**Mock Test Validation (Recommended for development):**
+- Use mock tests (`test_mock_*.py`) for rapid development and CI/CD
+- No Azure credentials or network access required
+- Predictable, fast results for unit testing
+- Run: `python3 -m pytest tests/test_mock_*.py -v`
+
+**Live Test Validation (Integration testing):**
+- Use live tests (`test_live_*.py`) only when testing actual Azure integration
+- Requires valid .env file with Azure credentials and `az login`
+- Slower execution, variable results, network dependent
+- Run: `python3 -m pytest tests/test_live_*.py -v` (only if Azure configured)
 
 ### Manual End-to-End Validation
 ALWAYS test actual functionality after making changes:
@@ -135,7 +172,11 @@ Both GUI (tkinter) and CLI modes are supported. Excel import/export functionalit
 Always run these commands before committing changes:
 - `python3 question_answerer.py --help` (should show usage)
 - `python3 -m pytest tests/test_resource_cleanup.py -v` (should pass all tests)
+- `python3 -m pytest tests/test_mock_*.py -v` (should pass all mock tests - no Azure required)
 - `pip install -r requirements.txt` (should install successfully)
+
+For Azure integration testing (optional):
+- `python3 -m pytest tests/test_live_*.py -v` (requires Azure credentials)
 
 ### File Locations
 - Main application: `/path/to/repo/question_answerer.py`
