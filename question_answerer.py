@@ -61,7 +61,19 @@ class QuestionnaireAgentUI:
             self.root = tk.Tk()
             self.root.title("Questionnaire Multiagent")
             self.root.geometry("1200x800")
-            # self.root.state('zoomed')  # Open maximized on Windows - commented out for Linux compatibility
+            
+            # Maximize window based on OS
+            import platform
+            try:
+                if platform.system() == "Windows":
+                    self.root.state('zoomed')  # Windows maximized
+                elif platform.system() == "Linux":
+                    self.root.attributes('-zoomed', True)  # Linux maximized
+                elif platform.system() == "Darwin":  # macOS
+                    self.root.attributes('-zoomed', True)  # macOS maximized
+            except tk.TclError:
+                # Fallback if maximizing fails - just use the geometry
+                pass
         else:
             self.root = None
         
