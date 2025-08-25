@@ -92,6 +92,9 @@ class QuestionnaireAgentUI:
         self.answer_checker_id = None
         self.link_checker_id = None
         
+        # CLI output buffer for capturing agent responses
+        self.cli_output = []
+        
         # Setup UI only if not in headless mode
         if not headless_mode:
             self.setup_ui()
@@ -1252,20 +1255,30 @@ class QuestionnaireAgentUI:
             if not all([self.question_answerer_id, self.answer_checker_id, self.link_checker_id]):
                 self.create_agents()
             
-            # Copy input file to output location
+            # Create temporary file to work with
+            import tempfile
             import shutil
-            shutil.copy2(input_file_path, output_file_path)
-            self.log_reasoning(f"Created output file from input template")
+            temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+            temp_path = temp_file.name
+            temp_file.close()
+            
+            # Copy input file to temporary location
+            shutil.copy2(input_file_path, temp_path)
+            self.log_reasoning(f"Created temporary working file: {temp_path}")
             
             # Read Excel file
-            excel_file = pd.ExcelFile(output_file_path)
+            excel_file = pd.ExcelFile(temp_path)
             context = self.context_entry.get().strip()
             char_limit = int(self.limit_entry.get()) if self.limit_entry.get().isdigit() else 2000
             max_retries = int(self.retries_entry.get()) if self.retries_entry.get().isdigit() else self.max_retries
             
+            # Load workbook once for all sheets
+            from openpyxl import load_workbook
+            wb = load_workbook(temp_path)
+            
             for sheet_name in excel_file.sheet_names:
                 self.log_reasoning(f"Processing sheet: {sheet_name}")
-                df = pd.read_excel(output_file_path, sheet_name=sheet_name)
+                df = pd.read_excel(temp_path, sheet_name=sheet_name)
                 
                 # Use LLM to identify columns (reuse CLI logic)
                 question_col, answer_col, docs_col = self.identify_columns_with_llm_cli(df)
@@ -1284,9 +1297,7 @@ class QuestionnaireAgentUI:
                 if docs_col and docs_col in df.columns:
                     df[docs_col] = df[docs_col].astype('object')
                 
-                # Load workbook for continuous saving
-                from openpyxl import load_workbook
-                wb = load_workbook(output_file_path)
+                # Get worksheet for this sheet
                 ws = wb[sheet_name]
                 
                 # Count total questions in this sheet first
@@ -1337,22 +1348,33 @@ class QuestionnaireAgentUI:
                                     cell.value = '\n'.join(links)
                             
                             # Save the workbook immediately after each successful question
-                            wb.save(output_file_path)
+                            wb.save(temp_path)
                             
-                            self.log_reasoning(f"Successfully processed question {idx + 1} and saved to output file")
+                            self.log_reasoning(f"Successfully processed question {idx + 1} and saved to temporary file")
                             questions_processed += 1
                         else:
                             self.log_reasoning(f"Failed to process question {idx + 1}: {answer}")
                             # Leave response blank on failure - don't write error messages  
                             # Leave documentation blank on failure - don't write error messages
                 
-                # Close the workbook for this sheet
-                wb.close()
-                
                 self.log_reasoning(f"Processed {questions_processed}/{questions_attempted} questions successfully in sheet '{sheet_name}'")
+            
+            # Close the workbook after processing all sheets
+            wb.close()
             
             # Close the Excel file
             excel_file.close()
+            
+            # Copy the completed temporary file to the final output location
+            shutil.copy2(temp_path, output_file_path)
+            self.log_reasoning(f"Copied completed file from {temp_path} to {output_file_path}")
+            
+            # Clean up temporary file
+            try:
+                os.unlink(temp_path)
+                self.log_reasoning(f"Cleaned up temporary file: {temp_path}")
+            except Exception as cleanup_error:
+                self.logger.warning(f"Could not clean up temporary file {temp_path}: {cleanup_error}")
             
             self.log_reasoning(f"Excel processing completed. All results saved to: {output_file_path}")
             
@@ -1362,6 +1384,15 @@ class QuestionnaireAgentUI:
                 
         except Exception as e:
             self.logger.error(f"Error processing Excel file: {e}")
+            
+            # Clean up temporary file if it exists
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                    self.log_reasoning(f"Cleaned up temporary file after error: {temp_path}")
+                except Exception as cleanup_error:
+                    self.logger.warning(f"Could not clean up temporary file {temp_path} after error: {cleanup_error}")
+            
             if not self.headless_mode:
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to process Excel file:\n{e}"))
         finally:
@@ -1829,12 +1860,24 @@ Only return existing column names. Do not suggest new column names."""
                 else:
                     self.create_agents()
             
-            # Read Excel file
-            excel_file = pd.ExcelFile(input_path)
-            
-            # Create output file by copying input
+            # Create temporary file to work with
+            import tempfile
             import shutil
-            shutil.copy2(input_path, output_path)
+            temp_file = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+            temp_path = temp_file.name
+            temp_file.close()
+            
+            # Copy input file to temporary location
+            shutil.copy2(input_path, temp_path)
+            if verbose:
+                print(f"Created temporary working file: {temp_path}")
+            
+            # Read Excel file
+            excel_file = pd.ExcelFile(temp_path)
+            
+            # Load workbook once for all sheets
+            from openpyxl import load_workbook
+            wb = load_workbook(temp_path)
             
             total_sheets = len(excel_file.sheet_names)
             if span:
@@ -1851,14 +1894,31 @@ Only return existing column names. Do not suggest new column names."""
                         sheet_span.set_attribute("sheet.index", sheet_index)
                         sheet_span.set_attribute("sheet.total", total_sheets)
                         
-                        df = pd.read_excel(output_path, sheet_name=sheet_name)
+                        df = pd.read_excel(temp_path, sheet_name=sheet_name)
                         sheet_span.set_attribute("sheet.row_count", len(df))
                         sheet_span.set_attribute("sheet.column_count", len(df.columns))
                         
-                        self._process_excel_sheet(df, sheet_name, output_path, context, char_limit, verbose, sheet_span, max_retries)
+                        self._process_excel_sheet(df, sheet_name, temp_path, wb, context, char_limit, verbose, sheet_span, max_retries)
                 else:
-                    df = pd.read_excel(output_path, sheet_name=sheet_name)
-                    self._process_excel_sheet(df, sheet_name, output_path, context, char_limit, verbose, None, max_retries)
+                    df = pd.read_excel(temp_path, sheet_name=sheet_name)
+                    self._process_excel_sheet(df, sheet_name, temp_path, wb, context, char_limit, verbose, None, max_retries)
+            
+            # Close the workbook after processing all sheets
+            wb.close()
+            
+            # Copy the completed temporary file to the final output location
+            shutil.copy2(temp_path, output_path)
+            if verbose:
+                print(f"Copied completed file from {temp_path} to {output_path}")
+            
+            # Clean up temporary file
+            try:
+                import os
+                os.unlink(temp_path)
+                if verbose:
+                    print(f"Cleaned up temporary file: {temp_path}")
+            except Exception as cleanup_error:
+                self.logger.warning(f"Could not clean up temporary file {temp_path}: {cleanup_error}")
             
             if verbose:
                 print(f"Excel processing completed. Results saved to: {output_path}")
@@ -1874,6 +1934,16 @@ Only return existing column names. Do not suggest new column names."""
             if verbose:
                 print(error_msg)
             
+            # Clean up temporary file if it exists
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                try:
+                    import os
+                    os.unlink(temp_path)
+                    if verbose:
+                        print(f"Cleaned up temporary file after error: {temp_path}")
+                except Exception as cleanup_error:
+                    self.logger.warning(f"Could not clean up temporary file {temp_path} after error: {cleanup_error}")
+            
             if span:
                 span.set_attribute("success", False)
                 span.set_attribute("error.message", str(e))
@@ -1882,7 +1952,7 @@ Only return existing column names. Do not suggest new column names."""
             
             return False
     
-    def _process_excel_sheet(self, df: pd.DataFrame, sheet_name: str, output_path: str, context: str, char_limit: int, verbose: bool, span=None, max_retries: int = None):
+    def _process_excel_sheet(self, df: pd.DataFrame, sheet_name: str, temp_path: str, wb, context: str, char_limit: int, verbose: bool, span=None, max_retries: int = None):
         """Process a single Excel sheet with tracing."""
         # Use instance default if not provided
         if max_retries is None:
@@ -1907,6 +1977,9 @@ Only return existing column names. Do not suggest new column names."""
                 span.set_attribute("sheet.skipped", True)
                 span.set_attribute("skip_reason", "missing_required_columns")
             return
+
+        # Get worksheet for this sheet
+        ws = wb[sheet_name]
         
         # Process each question
         questions_processed = 0
@@ -1926,16 +1999,30 @@ Only return existing column names. Do not suggest new column names."""
                 success, answer, links = self.process_single_question_cli(question, context, char_limit, False, max_retries)
                 
                 if success:
-                    # Update the answer column
+                    # Update the answer column in dataframe
                     df.at[idx, answer_col] = answer
                     
                     # Update documentation column only if it exists and we have links
                     if docs_col and links:
                         df.at[idx, docs_col] = '\n'.join(links)
-                    # Leave documentation blank if no links or no docs column
+                    
+                    # Save to Excel file immediately using openpyxl
+                    row_num = idx + 2  # +2 because Excel is 1-indexed and has header
+                    
+                    # Find and update answer column
+                    for col_idx, col_name in enumerate(df.columns, 1):
+                        if col_name == answer_col:
+                            cell = ws.cell(row=row_num, column=col_idx)
+                            cell.value = answer
+                        elif col_name == docs_col and docs_col and links:
+                            cell = ws.cell(row=row_num, column=col_idx)
+                            cell.value = '\n'.join(links)
+                    
+                    # Save the workbook immediately after each successful question
+                    wb.save(temp_path)
                     
                     if verbose:
-                        print(f"Successfully processed question {idx + 1}")
+                        print(f"Successfully processed question {idx + 1} and saved to temporary file")
                     questions_processed += 1
                 else:
                     if verbose:
@@ -1947,30 +2034,6 @@ Only return existing column names. Do not suggest new column names."""
             span.set_attribute("questions.attempted", questions_attempted)
             span.set_attribute("questions.processed", questions_processed)
             span.set_attribute("questions.success_rate", questions_processed / questions_attempted if questions_attempted > 0 else 0)
-        
-        # Save updated sheet if we attempted any questions (regardless of success)
-        if questions_attempted > 0:
-            # Use openpyxl directly to preserve formatting
-            from openpyxl import load_workbook
-            wb = load_workbook(output_path)
-            ws = wb[sheet_name]
-            
-            # Update only the data, not the formatting
-            for idx, row in df.iterrows():
-                row_num = idx + 2  # +2 because Excel is 1-indexed and has header
-                if question_col and pd.notna(row[question_col]) and str(row[question_col]).strip():
-                    # Find answer column index
-                    for col_idx, col_name in enumerate(df.columns, 1):
-                        if col_name == answer_col:
-                            cell = ws.cell(row=row_num, column=col_idx)
-                            if pd.notna(row[answer_col]) and str(row[answer_col]).strip():
-                                cell.value = str(row[answer_col])
-                        elif col_name == docs_col and docs_col:
-                            cell = ws.cell(row=row_num, column=col_idx)
-                            if pd.notna(row[docs_col]) and str(row[docs_col]).strip():
-                                cell.value = str(row[docs_col])
-            
-            wb.save(output_path)
         
         if verbose:
             print(f"Processed {questions_processed}/{questions_attempted} questions successfully in sheet '{sheet_name}'")
