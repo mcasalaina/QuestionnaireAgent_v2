@@ -24,10 +24,14 @@ from opentelemetry import trace
 from opentelemetry.trace import Tracer
 
 import pandas as pd
+import warnings
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from azure.ai.agents.models import BingGroundingTool
 from dotenv import load_dotenv
+
+# Suppress openpyxl data validation warnings - these are not actionable by users
+warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader', message='.*Data Validation extension.*')
 
 # Import the resource manager for agent cleanup
 from utils.resource_manager import FoundryAgentSession
@@ -1356,12 +1360,33 @@ class QuestionnaireAgentUI:
                 question_col = col
                 break
         
-        # Look for answer-like columns
+        # Look for answer-like columns with priority order
+        # Priority: exact matches for Response/Answer/Responses/Answers, then other terms
+        priority_terms = ['response', 'answer', 'responses', 'answers']
+        secondary_terms = ['reply', 'result']
+        
+        # First, look for priority terms (exact matches)
         for col in columns:
             col_lower = col.lower()
-            if any(word in col_lower for word in ['answer', 'response', 'reply', 'a', 'result']):
+            if col_lower in priority_terms:
                 answer_col = col
                 break
+        
+        # If no priority match found, look for columns containing priority terms
+        if not answer_col:
+            for col in columns:
+                col_lower = col.lower()
+                if any(term in col_lower for term in priority_terms):
+                    answer_col = col
+                    break
+        
+        # Finally, fall back to secondary terms
+        if not answer_col:
+            for col in columns:
+                col_lower = col.lower()
+                if any(term in col_lower for term in secondary_terms + ['a']):  # 'a' as last resort
+                    answer_col = col
+                    break
         
         # Look for documentation columns
         for col in columns:
@@ -1514,18 +1539,27 @@ class QuestionnaireAgentUI:
             self.log_reasoning(f"Created temporary working file: {temp_path}")
             
             # Read Excel file
-            excel_file = pd.ExcelFile(temp_path)
+            # Suppress openpyxl data validation warnings when reading Excel metadata
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader')
+                excel_file = pd.ExcelFile(temp_path)
             context = self.context_entry.get().strip()
             char_limit = int(self.limit_entry.get()) if self.limit_entry.get().isdigit() else 2000
             max_retries = int(self.retries_entry.get()) if self.retries_entry.get().isdigit() else self.max_retries
             
             # Load workbook once for all sheets
             from openpyxl import load_workbook
-            wb = load_workbook(temp_path)
+            # Suppress openpyxl data validation warnings when loading Excel
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader')
+                wb = load_workbook(temp_path)
             
             for sheet_name in excel_file.sheet_names:
                 self.log_reasoning(f"Processing sheet: {sheet_name}")
-                df = pd.read_excel(temp_path, sheet_name=sheet_name)
+                # Suppress openpyxl data validation warnings when reading Excel
+                with warnings.catch_warnings():
+                    warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader')
+                    df = pd.read_excel(temp_path, sheet_name=sheet_name)
                 
                 # Use LLM to identify columns (reuse CLI logic)
                 question_col, answer_col, docs_col = self.identify_columns_with_llm_cli(df)
@@ -1706,96 +1740,8 @@ class QuestionnaireAgentUI:
                 except Exception as cleanup_error:
                     self.logger.warning(f"Could not clean up temporary file after save failure {temp_path}: {cleanup_error}")
             
-    def identify_columns_with_llm(self, df: pd.DataFrame) -> Tuple[str, str, str]:
-        """Use LLM to identify question, answer, and documentation columns."""
-        # Check for mock mode first
-        if self.mock_mode:
-            question_col, answer_col, docs_col = self.identify_columns_mock(df)
-            # Convert None to fallback strings for GUI mode
-            if not question_col:
-                question_col = self.identify_question_column(df)
-            if not answer_col:
-                answer_col = self.identify_answer_column(df)
-            if not docs_col:
-                docs_col = self.identify_docs_column(df)
-            return question_col, answer_col, docs_col
-            
-        try:
-            # Create a prompt with column names and sample data
-            column_info = []
-            for col in df.columns:
-                sample_data = df[col].dropna().head(3).tolist()
-                column_info.append(f"Column '{col}': {sample_data}")
-            
-            prompt = f"""Analyze the following Excel columns and identify which column contains:
-1. Questions (to be answered)
-2. Expected answers (where AI responses should go)
-3. Documentation/links (where reference links should go)
 
-Columns:
-{chr(10).join(column_info)}
 
-Respond in this exact format:
-Question Column: [column_name]
-Answer Column: [column_name]
-Documentation Column: [column_name]
-
-If a column doesn't exist, suggest a name for it."""
-
-            # Use the Question Answerer agent to analyze columns
-            thread = self.project_client.agents.threads.create()
-            message = self.project_client.agents.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content=prompt
-            )
-            
-            run = self.project_client.agents.runs.create_and_process(
-                thread_id=thread.id,
-                agent_id=self.question_answerer_id
-            )
-            
-            messages = self.project_client.agents.messages.list(thread_id=thread.id)
-            
-            # Parse the response
-            for msg in messages:
-                if msg.role == "assistant" and msg.content:
-                    response = msg.content[0].text.value
-                    question_col = self.extract_column_name(response, "Question Column:")
-                    answer_col = self.extract_column_name(response, "Answer Column:")
-                    docs_col = self.extract_column_name(response, "Documentation Column:")
-                    
-                    # Fallback to simple logic if parsing fails
-                    if not question_col:
-                        question_col = self.identify_question_column(df)
-                    if not answer_col:
-                        answer_col = self.identify_answer_column(df)
-                    if not docs_col:
-                        docs_col = self.identify_docs_column(df)
-                    
-                    return question_col, answer_col, docs_col
-            
-            # Fallback to simple logic
-            return (self.identify_question_column(df), 
-                   self.identify_answer_column(df), 
-                   self.identify_docs_column(df))
-            
-        except Exception as e:
-            self.logger.error(f"Error identifying columns with LLM: {e}")
-            # Fallback to simple logic
-            return (self.identify_question_column(df), 
-                   self.identify_answer_column(df), 
-                   self.identify_docs_column(df))
-                   
-    def extract_column_name(self, text: str, prefix: str) -> Optional[str]:
-        """Extract column name from LLM response."""
-        import re
-        pattern = f"{re.escape(prefix)}\\s*(.+?)(?:\\n|$)"
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-        return None
-        
     def process_question_with_agents(self, question: str, context: str, char_limit: int, max_retries: int) -> Tuple[bool, str, List[str]]:
         """Process a single question using the three-agent workflow."""
         self.log_reasoning("=" * 80)
@@ -2136,11 +2082,17 @@ Only return existing column names. Do not suggest new column names."""
                 print(f"Created temporary working file: {temp_path}")
             
             # Read Excel file
-            excel_file = pd.ExcelFile(temp_path)
+            # Suppress openpyxl data validation warnings when reading Excel metadata
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader')
+                excel_file = pd.ExcelFile(temp_path)
             
             # Load workbook once for all sheets
             from openpyxl import load_workbook
-            wb = load_workbook(temp_path)
+            # Suppress openpyxl data validation warnings when loading Excel
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader')
+                wb = load_workbook(temp_path)
             
             total_sheets = len(excel_file.sheet_names)
             if span:
@@ -2157,13 +2109,19 @@ Only return existing column names. Do not suggest new column names."""
                         sheet_span.set_attribute("sheet.index", sheet_index)
                         sheet_span.set_attribute("sheet.total", total_sheets)
                         
-                        df = pd.read_excel(temp_path, sheet_name=sheet_name)
+                        # Suppress openpyxl data validation warnings when reading Excel
+                        with warnings.catch_warnings():
+                            warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader')
+                            df = pd.read_excel(temp_path, sheet_name=sheet_name)
                         sheet_span.set_attribute("sheet.row_count", len(df))
                         sheet_span.set_attribute("sheet.column_count", len(df.columns))
                         
                         self._process_excel_sheet(df, sheet_name, temp_path, wb, context, char_limit, verbose, sheet_span, max_retries)
                 else:
-                    df = pd.read_excel(temp_path, sheet_name=sheet_name)
+                    # Suppress openpyxl data validation warnings when reading Excel
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader')
+                        df = pd.read_excel(temp_path, sheet_name=sheet_name)
                     self._process_excel_sheet(df, sheet_name, temp_path, wb, context, char_limit, verbose, None, max_retries)
             
             # Close the workbook after processing all sheets
@@ -2243,6 +2201,12 @@ Only return existing column names. Do not suggest new column names."""
 
         # Get worksheet for this sheet
         ws = wb[sheet_name]
+        
+        # Convert answer and documentation columns to object dtype to prevent pandas dtype warnings
+        if answer_col in df.columns:
+            df[answer_col] = df[answer_col].astype('object')
+        if docs_col and docs_col in df.columns:
+            df[docs_col] = df[docs_col].astype('object')
         
         # Process each question
         questions_processed = 0
