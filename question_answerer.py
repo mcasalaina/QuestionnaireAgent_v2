@@ -15,6 +15,8 @@ import asyncio
 import logging
 import argparse
 import sys
+import atexit
+import signal
 from typing import Tuple, Optional, List, Dict, Any
 from pathlib import Path
 from azure.monitor.opentelemetry import configure_azure_monitor
@@ -30,6 +32,9 @@ from dotenv import load_dotenv
 
 # Suppress openpyxl data validation warnings - these are not actionable by users
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl.worksheet._reader', message='.*Data Validation extension.*')
+
+# Import the resource manager for agent cleanup
+from utils.resource_manager import FoundryAgentSession
 
 # Load environment variables
 load_dotenv(override=True)
@@ -105,6 +110,11 @@ class QuestionnaireAgentUI:
         self.answer_checker_id = None
         self.link_checker_id = None
         
+        # Agent sessions for proper resource cleanup
+        self.question_answerer_session = None
+        self.answer_checker_session = None
+        self.link_checker_session = None
+        
         # CLI output buffer for capturing agent responses
         self.cli_output = []
         
@@ -136,6 +146,39 @@ class QuestionnaireAgentUI:
             self.status_excel_question = None
             self.start_time = None
             self.timer_job = None
+        
+        # Register cleanup handlers for proper agent resource management
+        self._setup_cleanup_handlers()
+        
+    def _setup_cleanup_handlers(self):
+        """Setup cleanup handlers for agent resources."""
+        # Register cleanup on normal program exit
+        atexit.register(self.cleanup_agents)
+        
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        
+        # Setup GUI window close protocol if in GUI mode
+        if not self.headless_mode and self.root:
+            self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+    
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully."""
+        self.logger.info(f"Received signal {signum}, cleaning up agents...")
+        self.cleanup_agents()
+        sys.exit(0)
+    
+    def _on_window_close(self):
+        """Handle GUI window close event."""
+        self.logger.info("Application window closing, cleaning up agents...")
+        self.cleanup_agents()
+        if self.root:
+            self.root.destroy()
+    
+    def __del__(self):
+        """Destructor to ensure cleanup on object destruction."""
+        self.cleanup_agents()
         
     def init_azure_client(self):
         """Initialize Azure AI Project Client with credentials from .env file."""
@@ -757,9 +800,54 @@ class QuestionnaireAgentUI:
             self.question_text.delete(1.0, tk.END)
             self.question_text.insert(tk.END, question)
             self.root.update_idletasks()
+    
+    def cleanup_agents(self):
+        """Clean up all Azure AI Foundry agent resources."""
+        # Skip cleanup in mock mode or if already cleaned up
+        if self.mock_mode:
+            return
+        
+        try:
+            # Clean up question answerer session
+            if self.question_answerer_session:
+                try:
+                    self.question_answerer_session.__exit__(None, None, None)
+                    self.logger.info("Cleaned up Question Answerer agent")
+                except Exception as e:
+                    self.logger.warning(f"Error cleaning up Question Answerer agent: {e}")
+                finally:
+                    self.question_answerer_session = None
+                    self.question_answerer_id = None
+            
+            # Clean up answer checker session
+            if self.answer_checker_session:
+                try:
+                    self.answer_checker_session.__exit__(None, None, None)
+                    self.logger.info("Cleaned up Answer Checker agent")
+                except Exception as e:
+                    self.logger.warning(f"Error cleaning up Answer Checker agent: {e}")
+                finally:
+                    self.answer_checker_session = None
+                    self.answer_checker_id = None
+            
+            # Clean up link checker session
+            if self.link_checker_session:
+                try:
+                    self.link_checker_session.__exit__(None, None, None)
+                    self.logger.info("Cleaned up Link Checker agent")
+                except Exception as e:
+                    self.logger.warning(f"Error cleaning up Link Checker agent: {e}")
+                finally:
+                    self.link_checker_session = None
+                    self.link_checker_id = None
+                    
+            self.logger.info("Agent cleanup completed")
+            
+        except Exception as e:
+            self.logger.error(f"Error during agent cleanup: {e}")
             
     def create_agents(self):
-        """Create the three Azure AI Foundry agents."""
+        """Create the three Azure AI Foundry agents using FoundryAgentSession for proper cleanup."""
         # Skip agent creation in mock mode
         if self.mock_mode:
             self.log_reasoning("Mock mode enabled - skipping Azure agent creation")
@@ -768,8 +856,11 @@ class QuestionnaireAgentUI:
             self.link_checker_id = "mock_link_checker"
             return
             
+        # Clean up any existing agents first
+        self.cleanup_agents()
+            
         try:
-            self.log_reasoning("Creating Azure AI Foundry agents...")
+            self.log_reasoning("Creating Azure AI Foundry agents using FoundryAgentSession...")
             
             # Get model deployment name from environment
             model_deployment = os.getenv("AZURE_OPENAI_MODEL_DEPLOYMENT")
@@ -807,43 +898,53 @@ class QuestionnaireAgentUI:
             # Create Bing grounding tool
             bing_tool = BingGroundingTool(connection_id=conn_id)
             
-            # Create Question Answerer agent
+            # Create Question Answerer agent using FoundryAgentSession
             self.log_reasoning(f"Creating Question Answerer agent with model: {model_deployment}")
             try:
-                question_answerer = self.project_client.agents.create_agent(
+                self.question_answerer_session = FoundryAgentSession(
+                    client=self.project_client,
                     model=model_deployment,
                     name="Question Answerer",
                     instructions="You are a question answering agent. You MUST search the web extensively for evidence and synthesize accurate answers. Your answer must be based on current web search results. IMPORTANT: You must include the actual source URLs directly in your answer text. Write the full URLs (like https://docs.microsoft.com/example) in your response text where you reference information. Do not use citation markers like [1], (source), or 【†source】 - instead include the actual URLs, which you should always put at the end of your response, separated by newlines with no other text or formatting. Write in plain text without formatting. Your answer must end with a period and contain only complete sentences. Do not include any closing phrases like 'Learn more:', 'References:', 'For more information, see:', 'For more details, see:', 'Learn more at:', 'More information:', 'Additional resources:', or any similar calls-to-action at the end. There should only be prose, followed by a list of URLs for reference separated by newlines. Those URLs should be the ones provided by Bing. Always use the Bing grounding tool to search for current information.",
-                    tools=bing_tool.definitions
+                    agent_config={"tools": bing_tool.definitions}
                 )
-                self.question_answerer_id = question_answerer.id
+                question_answerer, _ = self.question_answerer_session.__enter__()
+                self.question_answerer_id = self.question_answerer_session.get_agent_id()
                 self.log_reasoning(f"Created Question Answerer agent: {self.question_answerer_id}")
             except Exception as e:
                 self.log_reasoning(f"ERROR: Failed to create Question Answerer agent with model '{model_deployment}': {e}")
                 raise ValueError(f"Model deployment '{model_deployment}' not found. Check AZURE_OPENAI_MODEL_DEPLOYMENT in your .env file.") from e
             
-            # Create Answer Checker agent
-            answer_checker = self.project_client.agents.create_agent(
+            # Create Answer Checker agent using FoundryAgentSession
+            self.answer_checker_session = FoundryAgentSession(
+                client=self.project_client,
                 model=model_deployment,
                 name="Answer Checker",
                 instructions="You are an answer validation agent. Review candidate answers for factual correctness, completeness, and consistency. Use web search to verify claims. Respond with 'VALID' if the answer is acceptable or 'INVALID: [reason]' if not.",
-                tools=bing_tool.definitions
+                agent_config={"tools": bing_tool.definitions}
             )
-            self.answer_checker_id = answer_checker.id
+            answer_checker, _ = self.answer_checker_session.__enter__()
+            self.answer_checker_id = self.answer_checker_session.get_agent_id()
+            self.log_reasoning(f"Created Answer Checker agent: {self.answer_checker_id}")
             
-            # Create Link Checker agent
-            link_checker = self.project_client.agents.create_agent(
+            # Create Link Checker agent using FoundryAgentSession
+            self.link_checker_session = FoundryAgentSession(
+                client=self.project_client,
                 model=model_deployment,
                 name="Link Checker",
                 instructions="You are a link validation agent. Verify that URLs are reachable and relevant to the given question. Report any issues with links.",
-                tools=[]  # Will use requests/playwright for link checking
+                agent_config={"tools": []}  # Will use requests/playwright for link checking
             )
-            self.link_checker_id = link_checker.id
+            link_checker, _ = self.link_checker_session.__enter__()
+            self.link_checker_id = self.link_checker_session.get_agent_id()
+            self.log_reasoning(f"Created Link Checker agent: {self.link_checker_id}")
             
-            self.log_reasoning("All agents created successfully!")
+            self.log_reasoning("All agents created successfully with automatic cleanup enabled!")
             
         except Exception as e:
             self.logger.error(f"Failed to create agents: {e}")
+            # Clean up any partially created agents
+            self.cleanup_agents()
             raise
             
     def generate_answer(self, question: str, context: str, char_limit: int, attempt_history: list = None) -> Tuple[Optional[str], List[str]]:
@@ -1259,12 +1360,33 @@ class QuestionnaireAgentUI:
                 question_col = col
                 break
         
-        # Look for answer-like columns
+        # Look for answer-like columns with priority order
+        # Priority: exact matches for Response/Answer/Responses/Answers, then other terms
+        priority_terms = ['response', 'answer', 'responses', 'answers']
+        secondary_terms = ['reply', 'result']
+        
+        # First, look for priority terms (exact matches)
         for col in columns:
             col_lower = col.lower()
-            if any(word in col_lower for word in ['answer', 'response', 'reply', 'a', 'result']):
+            if col_lower in priority_terms:
                 answer_col = col
                 break
+        
+        # If no priority match found, look for columns containing priority terms
+        if not answer_col:
+            for col in columns:
+                col_lower = col.lower()
+                if any(term in col_lower for term in priority_terms):
+                    answer_col = col
+                    break
+        
+        # Finally, fall back to secondary terms
+        if not answer_col:
+            for col in columns:
+                col_lower = col.lower()
+                if any(term in col_lower for term in secondary_terms + ['a']):  # 'a' as last resort
+                    answer_col = col
+                    break
         
         # Look for documentation columns
         for col in columns:
@@ -1618,96 +1740,8 @@ class QuestionnaireAgentUI:
                 except Exception as cleanup_error:
                     self.logger.warning(f"Could not clean up temporary file after save failure {temp_path}: {cleanup_error}")
             
-    def identify_columns_with_llm(self, df: pd.DataFrame) -> Tuple[str, str, str]:
-        """Use LLM to identify question, answer, and documentation columns."""
-        # Check for mock mode first
-        if self.mock_mode:
-            question_col, answer_col, docs_col = self.identify_columns_mock(df)
-            # Convert None to fallback strings for GUI mode
-            if not question_col:
-                question_col = self.identify_question_column(df)
-            if not answer_col:
-                answer_col = self.identify_answer_column(df)
-            if not docs_col:
-                docs_col = self.identify_docs_column(df)
-            return question_col, answer_col, docs_col
-            
-        try:
-            # Create a prompt with column names and sample data
-            column_info = []
-            for col in df.columns:
-                sample_data = df[col].dropna().head(3).tolist()
-                column_info.append(f"Column '{col}': {sample_data}")
-            
-            prompt = f"""Analyze the following Excel columns and identify which column contains:
-1. Questions (to be answered)
-2. Expected answers (where AI responses should go)
-3. Documentation/links (where reference links should go)
 
-Columns:
-{chr(10).join(column_info)}
 
-Respond in this exact format:
-Question Column: [column_name]
-Answer Column: [column_name]
-Documentation Column: [column_name]
-
-If a column doesn't exist, suggest a name for it."""
-
-            # Use the Question Answerer agent to analyze columns
-            thread = self.project_client.agents.threads.create()
-            message = self.project_client.agents.messages.create(
-                thread_id=thread.id,
-                role="user",
-                content=prompt
-            )
-            
-            run = self.project_client.agents.runs.create_and_process(
-                thread_id=thread.id,
-                agent_id=self.question_answerer_id
-            )
-            
-            messages = self.project_client.agents.messages.list(thread_id=thread.id)
-            
-            # Parse the response
-            for msg in messages:
-                if msg.role == "assistant" and msg.content:
-                    response = msg.content[0].text.value
-                    question_col = self.extract_column_name(response, "Question Column:")
-                    answer_col = self.extract_column_name(response, "Answer Column:")
-                    docs_col = self.extract_column_name(response, "Documentation Column:")
-                    
-                    # Fallback to simple logic if parsing fails
-                    if not question_col:
-                        question_col = self.identify_question_column(df)
-                    if not answer_col:
-                        answer_col = self.identify_answer_column(df)
-                    if not docs_col:
-                        docs_col = self.identify_docs_column(df)
-                    
-                    return question_col, answer_col, docs_col
-            
-            # Fallback to simple logic
-            return (self.identify_question_column(df), 
-                   self.identify_answer_column(df), 
-                   self.identify_docs_column(df))
-            
-        except Exception as e:
-            self.logger.error(f"Error identifying columns with LLM: {e}")
-            # Fallback to simple logic
-            return (self.identify_question_column(df), 
-                   self.identify_answer_column(df), 
-                   self.identify_docs_column(df))
-                   
-    def extract_column_name(self, text: str, prefix: str) -> Optional[str]:
-        """Extract column name from LLM response."""
-        import re
-        pattern = f"{re.escape(prefix)}\\s*(.+?)(?:\\n|$)"
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-        return None
-        
     def process_question_with_agents(self, question: str, context: str, char_limit: int, max_retries: int) -> Tuple[bool, str, List[str]]:
         """Process a single question using the three-agent workflow."""
         self.log_reasoning("=" * 80)
@@ -2282,6 +2316,7 @@ def main():
     # Check if any arguments were provided
     if len(sys.argv) == 1:
         # No arguments - run in GUI mode
+        app = None
         try:
             app = QuestionnaireAgentUI(headless_mode=False)
             app.run()
@@ -2291,6 +2326,10 @@ def main():
                 messagebox.showerror("Startup Error", f"Failed to start application:\n{e}")
             except:
                 pass
+        finally:
+            # Ensure cleanup happens even if app creation failed
+            if app:
+                app.cleanup_agents()
     else:
         # Arguments provided - run in CLI mode
         args = parser.parse_args()
@@ -2306,6 +2345,7 @@ def main():
             input_path = Path(args.import_excel)
             args.output_excel = str(input_path.parent / f"{input_path.stem}.answered.xlsx")
         
+        app = None
         try:
             app = QuestionnaireAgentUI(headless_mode=True, max_retries=args.max_retries, mock_mode=args.mock)
             
@@ -2325,15 +2365,24 @@ def main():
                     else:
                         print("\n=== DOCUMENTATION LINKS ===")
                         print("No documentation links found")
+                    # Cleanup before exit
+                    if app:
+                        app.cleanup_agents()
                     sys.exit(0)
                 else:
                     print(f"Error: {answer}")
+                    # Cleanup before exit
+                    if app:
+                        app.cleanup_agents()
                     sys.exit(1)
             
             elif args.import_excel:
                 # Process Excel file
                 if not os.path.exists(args.import_excel):
                     print(f"Error: Excel file not found: {args.import_excel}")
+                    # Cleanup before exit
+                    if app:
+                        app.cleanup_agents()
                     sys.exit(1)
                 
                 success = app.process_excel_file_cli(
@@ -2342,16 +2391,28 @@ def main():
                 
                 if success:
                     print(f"\nExcel processing completed successfully. Results saved to: {args.output_excel}")
+                    # Cleanup before exit
+                    if app:
+                        app.cleanup_agents()
                     sys.exit(0)
                 else:
                     print("Error: Excel processing failed")
+                    # Cleanup before exit
+                    if app:
+                        app.cleanup_agents()
                     sys.exit(1)
         
         except KeyboardInterrupt:
             print("\nOperation cancelled by user")
+            # Cleanup before exit
+            if app:
+                app.cleanup_agents()
             sys.exit(1)
         except Exception as e:
             print(f"Error: {e}")
+            # Cleanup before exit
+            if app:
+                app.cleanup_agents()
             sys.exit(1)
 
 
