@@ -2192,6 +2192,24 @@ Only return existing column names. Do not suggest new column names."""
                 success, answer, links = self.process_single_question_cli(question, context, char_limit, False, max_retries)
                 
                 if success:
+                    # Show answer preview and link count in verbose mode
+                    if verbose:
+                        # Strip Azure AI context prefix from answer preview
+                        clean_answer = answer
+                        # Look for pattern "Based on ... context, regarding '...': " and strip it
+                        import re
+                        context_pattern = r"^Based on .+ context, regarding '.+': "
+                        match = re.search(context_pattern, answer)
+                        if match:
+                            clean_answer = answer[match.end():]
+                        
+                        # Show beginning of the clean answer (first 100 characters)
+                        answer_preview = clean_answer[:100] + "..." if len(clean_answer) > 100 else clean_answer
+                        print(f"Answer: {answer_preview}")
+                        # Show how many links were found
+                        link_count = len(links) if links else 0
+                        print(f"Found {link_count} documentation links")
+                    
                     # Update the answer column in dataframe
                     df.at[idx, answer_col] = answer
                     
