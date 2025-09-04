@@ -860,24 +860,19 @@ class QuestionnaireAgentUI:
         self.cleanup_agents()
             
         try:
-            self.log_reasoning("Creating Azure AI Foundry agents using FoundryAgentSession...")
+            self.log_reasoning("Creating agents...")
             
             # Get model deployment name from environment
             model_deployment = os.getenv("AZURE_OPENAI_MODEL_DEPLOYMENT")
             bing_resource_name = os.getenv("BING_CONNECTION_ID")
             
-            self.log_reasoning(f"Using model deployment: {model_deployment}")
-            self.log_reasoning(f"Using Bing connection name: {bing_resource_name}")
-            
             if not bing_resource_name:
                 raise ValueError("BING_CONNECTION_ID not found in environment variables")
             
             # Get the actual connection ID from the resource name
-            self.log_reasoning(f"Getting connection ID for resource: {bing_resource_name}")
             try:
                 connection = self.project_client.connections.get(name=bing_resource_name)
                 conn_id = connection.id
-                self.log_reasoning(f"Retrieved connection ID: {conn_id}")
             except Exception as conn_error:
                 self.log_reasoning(f"ERROR: Failed to get Bing connection '{bing_resource_name}': {conn_error}")
                 
@@ -899,7 +894,6 @@ class QuestionnaireAgentUI:
             bing_tool = BingGroundingTool(connection_id=conn_id)
             
             # Create Question Answerer agent using FoundryAgentSession
-            self.log_reasoning(f"Creating Question Answerer agent with model: {model_deployment}")
             try:
                 self.question_answerer_session = FoundryAgentSession(
                     client=self.project_client,
@@ -910,7 +904,6 @@ class QuestionnaireAgentUI:
                 )
                 question_answerer, _ = self.question_answerer_session.__enter__()
                 self.question_answerer_id = self.question_answerer_session.get_agent_id()
-                self.log_reasoning(f"Created Question Answerer agent: {self.question_answerer_id}")
             except Exception as e:
                 self.log_reasoning(f"ERROR: Failed to create Question Answerer agent with model '{model_deployment}': {e}")
                 raise ValueError(f"Model deployment '{model_deployment}' not found. Check AZURE_OPENAI_MODEL_DEPLOYMENT in your .env file.") from e
@@ -925,7 +918,6 @@ class QuestionnaireAgentUI:
             )
             answer_checker, _ = self.answer_checker_session.__enter__()
             self.answer_checker_id = self.answer_checker_session.get_agent_id()
-            self.log_reasoning(f"Created Answer Checker agent: {self.answer_checker_id}")
             
             # Create Link Checker agent using FoundryAgentSession
             self.link_checker_session = FoundryAgentSession(
@@ -937,9 +929,8 @@ class QuestionnaireAgentUI:
             )
             link_checker, _ = self.link_checker_session.__enter__()
             self.link_checker_id = self.link_checker_session.get_agent_id()
-            self.log_reasoning(f"Created Link Checker agent: {self.link_checker_id}")
             
-            self.log_reasoning("All agents created successfully with automatic cleanup enabled!")
+            self.log_reasoning("All agents created successfully!")
             
         except Exception as e:
             self.logger.error(f"Failed to create agents: {e}")
@@ -978,7 +969,6 @@ class QuestionnaireAgentUI:
         
         # Create thread
         thread = self.project_client.agents.threads.create()
-        self.log_reasoning(f"Created thread: {thread.id}")
         
         # Create message
         prompt_content = f"Context: {context}\n\nQuestion: {question}\n\n"
@@ -1017,7 +1007,6 @@ class QuestionnaireAgentUI:
             role="user",
             content=prompt_content
         )
-        self.log_reasoning(f"Created message: {message.id}")
         
         # Add span attributes for better metrics capture
         if self.tracer:
@@ -1095,7 +1084,6 @@ class QuestionnaireAgentUI:
             documentation_urls = []
             
             for step in run_steps:
-                self.log_reasoning(f"Checking run step: {step.id}")
                 
                 # Check if there are tool calls in the step details
                 if hasattr(step, 'step_details') and step.step_details:
@@ -1167,7 +1155,6 @@ class QuestionnaireAgentUI:
         
         # Create thread
         thread = self.project_client.agents.threads.create()
-        self.log_reasoning(f"Answer Checker: Created thread {thread.id}")
         
         # Create message
         prompt_content = f"Question: {question}\n\nCandidate Answer: {answer}\n\nPlease validate this answer for factual correctness, completeness, and consistency. Respond with 'VALID' if acceptable or 'INVALID: [reason]' if not."
@@ -1176,7 +1163,6 @@ class QuestionnaireAgentUI:
             role="user",
             content=prompt_content
         )
-        self.log_reasoning(f"Answer Checker: Created validation message")
         
         # Add span attributes for better metrics capture
         if self.tracer:

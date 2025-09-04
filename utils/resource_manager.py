@@ -82,7 +82,6 @@ class FoundryAgentSession:
         """
         try:
             # Create the agent using Azure AI Foundry client
-            logger.info("Creating Foundry agent...")
             
             # Prepare agent configuration
             agent_config = {
@@ -104,11 +103,8 @@ class FoundryAgentSession:
                 self.agent_id = self.agent['id']
             else:
                 self.agent_id = self.agent
-                
-            logger.info(f"Created agent with ID: {self.agent_id}")
             
             # Create the thread
-            logger.info("Creating Foundry thread...")
             self.thread = self.client.agents.threads.create(**self.thread_config)
             
             # Extract thread ID (handle both object and dict responses)
@@ -118,8 +114,6 @@ class FoundryAgentSession:
                 self.thread_id = self.thread['id']
             else:
                 self.thread_id = self.thread
-                
-            logger.info(f"Created thread with ID: {self.thread_id}")
             
             return self.agent, self.thread
             
