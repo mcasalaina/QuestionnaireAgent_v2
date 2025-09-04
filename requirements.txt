@@ -2,6 +2,7 @@ requests>=2.28.0
 urllib3>=1.26.0
 azure-ai-projects
 azure-identity
+azure-ai-evaluation>=1.0.0
 python-dotenv
 openpyxl
 pandas

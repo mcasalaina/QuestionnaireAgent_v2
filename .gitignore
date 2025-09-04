@@ -22,3 +22,4 @@ output/
 
 # Temporary files in tests directory
 tests/~*
+evaluation/evaluation_results/
