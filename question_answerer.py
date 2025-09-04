@@ -685,7 +685,6 @@ class QuestionnaireAgentUI:
                 answer_valid = True
                 clean_answer = validated_answer  # Use the previously validated answer
             else:
-                self.log_reasoning("Answer Checker: Validating answer...")
                 answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
                 
                 if not answer_valid:
@@ -704,7 +703,6 @@ class QuestionnaireAgentUI:
                 else:
                     # Answer Checker approved - save this as our validated answer
                     validated_answer = clean_answer
-                    self.log_reasoning("Answer Checker: APPROVED - answer saved as validated")
             
             # Step 3: Validate links
             self.log_reasoning("Link Checker: Verifying URLs...")
@@ -1163,11 +1161,8 @@ class QuestionnaireAgentUI:
         # Update status bar
         self.update_agent("Answer Checker")
         
-        self.log_reasoning("Answer Checker: Starting validation...")
-        
         # Create thread
         thread = self.project_client.agents.threads.create()
-        self.log_reasoning(f"Answer Checker: Created thread {thread.id}")
         
         # Create message
         prompt_content = f"Question: {question}\n\nCandidate Answer: {answer}\n\nPlease validate this answer for factual correctness, completeness, and consistency. Respond with 'VALID' if acceptable or 'INVALID: [reason]' if not."
@@ -1176,7 +1171,6 @@ class QuestionnaireAgentUI:
             role="user",
             content=prompt_content
         )
-        self.log_reasoning(f"Answer Checker: Created validation message")
         
         # Add span attributes for better metrics capture
         if self.tracer:
@@ -1195,8 +1189,6 @@ class QuestionnaireAgentUI:
             agent_id=self.answer_checker_id
         )
         
-        self.log_reasoning(f"Answer Checker: Run completed with status: {run.status}")
-        
         # Update span with completion attributes
         if self.tracer:
             current_span = trace.get_current_span()
@@ -1211,7 +1203,6 @@ class QuestionnaireAgentUI:
         for msg in messages:
             if msg.role == "assistant" and msg.content:
                 response = msg.content[0].text.value
-                self.log_reasoning(f"Answer Checker: Received response: {response[:200]}{'...' if len(response) > 200 else ''}")
                 
                 if "VALID" in response.upper() and "INVALID" not in response.upper():
                     self.log_reasoning("Answer Checker: APPROVED the answer")
@@ -1318,7 +1309,6 @@ class QuestionnaireAgentUI:
     
     def _execute_answer_checker_mock(self, question: str, answer: str) -> Tuple[bool, str]:
         """Mock implementation of Answer Checker for testing."""
-        self.log_reasoning("Answer Checker (MOCK): Starting validation...")
         self.log_reasoning("Answer Checker (MOCK): APPROVED the answer")
         return True, "VALID"
     
@@ -1801,7 +1791,6 @@ class QuestionnaireAgentUI:
                     answer_valid = True
                     clean_answer = validated_answer  # Use the previously validated answer
                 else:
-                    self.log_reasoning("Answer Checker: Validating answer...")
                     answer_valid, answer_feedback = self.validate_answer(question, clean_answer)
                     
                     if not answer_valid:
@@ -1818,7 +1807,6 @@ class QuestionnaireAgentUI:
                     else:
                         # Answer Checker approved - save this as our validated answer
                         validated_answer = clean_answer
-                        self.log_reasoning("Answer Checker: APPROVED - answer saved as validated")
                 
                 # Step 3: Validate links
                 links_valid, valid_links, link_feedback = self.validate_links(all_links)
